@@ -2,6 +2,9 @@
 
 ### Added
 
+- **品牌资产目录 `brand/`（Precision Geometry）成为唯一矢量源**：维护者采纳《2-Pyramid 品牌视觉方向提案》（提案 PDF 与评审记录一并归档在 `brand/`）。包含主标识（512，细线）、深色白版、小尺寸加粗 favicon、16–24px 专用 micro 光学版、横向组合（**文字已转曲**，无字体依赖，含白色版）。资产使用分档：16–24 micro / ≤48 favicon / ≥64 mark；应用内与网页 PNG 由 `tools/generate-logos.mjs` 生成（`npm run logos`），OS 图标由 `tools/generate-icons.mjs` 生成（`npm run icons`），均为幂等、带自检的生成物，不手改。
+  - README 顶部改为 `<picture>`：`prefers-color-scheme` 亮/暗自动切 `logo-256.png` / `logo-256-white.png`（GitHub 深色主题下不再看不见）。
+  - 旧 `logo-white.png` 实际是白底不透明（`corner alpha=255`）已修正为白线 + 透明底；`logo-source.png → tauri icon` 的旧链路废弃。
 - **转换产物写入 `2pyr-gen.json`（转换参数记录，默认开、可关）**：Java 目标转换成功后，在**产物包根目录**写入本次转换的参数——生成器名与版本/BUILD、源与目标的 `pack_format`（以及能可靠取得的目标版本标签）、本次六个转换开关、UTC 时间戳。**不含**路径、Windows 用户名、机器名、硬件 ID、UUID、IP 等任何个人信息；Minecraft 客户端不读取包根未知文件，它不参与资源包加载，删除也不影响包的使用。
   - 关闭方式：转换页新增「写入转换参数文件」开关（配置字段 `write_gen_metadata`，配置 + localStorage 双写，随备份/迁移走）；CLI 新增 `--no-gen-metadata`。只对 Java 目标写，Bedrock 目标（`.mcpack`）不写。
   - `legal/EULA.md` / `legal/PRIVACY.md` 及英文版四份同步披露（写入位置、字段清单、无个人信息、用途、关闭后不写、随包分发），生效日期统一 2026-10-24。
@@ -13,6 +16,10 @@
 
 ### Changed
 
+- **品牌视觉落地：应用内 / 安装器 / OS 图标 / README 全部换成 Precision Geometry 资产**：
+  - **OS 图标链重建**：白底圆角板 + 尺寸分档 artwork（16–24 用 micro、32–48 用 favicon、≥64 用 mark）。旧 `icon.ico` 是旧稿放大后的不透明白方块，16px 实测只有 **2** 个深色像素（近乎空白）；新 ICO 同口径 **35**、24px 15→**76**、32px 49→**90**、48px 146→**193**。MSIX 的 `Wide310x150Logo.png` / `SplashScreen.png` 还是更早的过期稿（透明底细线），已按同一设计重生成；`installer-app` 图标与主 `icon.ico` 同字节。
+  - **应用内落点重算**：HomePage 品牌块按新 mark 墨迹比例 71.5%（旧 45%）重算盒子与负 margin —— 44px 盒内可见约 31.5px，视觉大小与原 64px 旧素材一致；加载页 `boot-mark` 132→85px（视觉约 61px 不变，FLIP 飞行按 DOM 自然适配）；OOBE 顶部标识用小尺寸加粗版并改为主题墨色（主标识保持单色）；版本弹窗改用 mark（`logo-192.png`）并在深色下反相。
+  - 旧稿的 1.21.4+ 产物不受影响：本项只改应用自身资源与 README，转换器行为零改动（`cargo test --lib` 322 passed 不变）。
 - **OptiFine CIT 转换默认关闭（止血，待实机验证）**（`convert_cit`：true → false；GUI 转换页、配置缺省、CLI、驱动默认值四处同步）：用户报告 1.20.1 布吉岛包转 1.21.9–1.21.10 后弓与钻石剑为紫黑格。2.203.0 已修掉一个**确定**的 codec 错误（`enchantments` 裸字符串 → 数组；修复前真实客户端 codec 报 `Not a json array`，与黑紫症状吻合），但修复后用户仍报告黑紫。离线复核（真实 1.21.5 / 1.21.10 客户端 codec + 从 jar 读取 42 个真实附魔 id 构造 RegistryOps）显示修复后的数组形状**解析通过**，codec 层不再是可复现的失败点；但本环境没有实机渲染验证，该报告原因尚未复现，故按用户要求先默认关——这是**产品决策**，不是 codec 硬约束。关闭只跳过转换，`optifine/cit/**` 与 `mcpatcher/cit/**` 源文件原样保留（OptiFine 客户端仍会读取）；`delete_cit` 语义不变且仍优先于转换。CLI：`--no-cit` 保留为兼容参数（默认关之后不再改变行为），显式开启改用 `--cit`。
 - **数字 `CustomModelData` 写法复核（结论：现行写法正确，无需改动）**：`condition(property=minecraft:has_component)` → `range_dispatch(property=minecraft:custom_model_data)` 在真实 **1.21.5 / 1.21.10** 客户端 codec 下解析 **OK**；1.21.10 原版 `assets/minecraft/items/wolf_armor.json` / `compass.json` 同样使用 `property: minecraft:has_component`，证明该 property 合法。交接里「`has_component` 不是合法 predicate」的判断源于把一个 condition **property** 当成了 data component **predicate**（对照用例 C 的 JSON 本身写错了），不构成对现行方案的否定。
 - **附魔条件的离线报错已定性**：`Can't access registry ... minecraft:enchantment` 是离线校验器用 `JsonOps`、未加载动态注册表的局限；补上从 1.21.10 jar 读出的 42 个真实附魔 id（RegistryOps）后，修复后的 bow / diamond_sword / golden_axe 定义全部解析通过（负对照：不存在的附魔 id 立即失败）。修复前的裸字符串则无论哪种路径都报 `Not a json array`——那才是与用户黑紫吻合的真错误。剩余风险只在**实机渲染语义**，故 CIT 转换默认关闭等待实机确认。

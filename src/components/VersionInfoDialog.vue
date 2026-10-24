@@ -24,7 +24,9 @@ const emit = defineEmits<{ tapVersion: [] }>();
         </div>
         <div class="dialog-body">
           <div class="version-hero">
-            <img src="/favicon-192.png" class="version-logo" alt="2-Pyramid logo" />
+            <!-- 用 mark（细线、大尺寸版）而不是 32px favicon 的加粗版放大：
+                 版本信息是展示识别资产的场景，放大后应以 mark 的线宽为准。 -->
+            <img src="/logo-192.png" class="version-logo" alt="2-Pyramid logo" />
             <div class="version-title-row">
               <button class="version-tag" @click="emit('tapVersion')">
                 2-Pyramid v{{ props.version }}
@@ -67,9 +69,19 @@ const emit = defineEmits<{ tapVersion: [] }>();
   margin-bottom: 20px;
 }
 
+/*
+ * 72px：mark 的墨迹在 512 画布占 71.5%，所以视觉约 51px —— 与原来的
+ * favicon-192（墨迹约 87%）在 80px 盒里的观感接近，但细线更适合放大展示。
+ */
 .version-logo {
-  width: 80px;
-  height: 80px;
+  width: 72px;
+  height: 72px;
+}
+
+/* mark 是纯黑线条 + 透明底：深色主题下必须反相，否则完全不可见。
+   （首页 .brand-mark 的同类规则在 shared.css；这里是 scoped 弹窗，单独写一条。） */
+[data-theme='dark'] .version-logo {
+  filter: invert(1);
 }
 
 .version-title-row {

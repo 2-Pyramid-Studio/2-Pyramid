@@ -243,21 +243,20 @@ async function finish() {
     <header class="startup-top">
       <div class="top-brand">
         <!--
-          描边必须用 vector-effect="non-scaling-stroke"。
-          这个 viewBox 是 680×680，而元素只显示 40×40，缩放比 0.0588 ——
-          原来的 stroke-width="7" 实际渲染出来是 0.41px，内线 5 只有 0.29px，
-          亚像素，无论什么颜色都看不见。non-scaling-stroke 让 stroke-width
-          以 CSS 像素表达，不再随 viewBox 缩放。
+          小尺寸用品牌包的 **favicon 加粗版**（brand/2-pyramid-favicon.svg）：
+          它本来就是为 16–32px 设计的（viewBox 40 40 430 430、描边 20/16）。
+          这里的 28px 显示尺寸落在同一档，所以 **不再需要 non-scaling-stroke**——
+          旧 680 viewBox 素材的 stroke 7 在 40px 下只有 0.41px，才不得不用
+          vector-effect 以 CSS 像素表达线宽；新 viewBox 与显示尺寸同档，描边按
+          viewBox 单位缩放即可得到设计线宽（28px 时外线 ≈1.3px）。
 
-          **它必须写在每个 <line> 上，不能写在 <g> 上** —— vector-effect 不是
-          继承属性，挂在 <g> 上等于没挂（第一版就是这么白改的）。
+          颜色跟随 `.top-brand` 的 currentColor，由主题令牌决定（深色下自动反白），
+          不在组件里写死。
         -->
-        <svg class="startup-logo" viewBox="0 0 680 680" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <g stroke="currentColor" stroke-linecap="round">
-            <line x1="260" y1="520" x2="200" y2="390" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-            <line x1="260" y1="520" x2="500" y2="190" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-            <line x1="200" y1="390" x2="500" y2="190" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-            <line x1="260" y1="520" x2="374" y2="274" stroke-width="1.15" vector-effect="non-scaling-stroke"/>
+        <svg class="startup-logo" viewBox="40 40 430 430" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <g stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M140 430 L76 286 L430 76 Z" stroke-width="20"/>
+            <path d="M140 430 L282 198" stroke-width="16"/>
           </g>
         </svg>
         <div class="top-brand-text">
@@ -705,13 +704,17 @@ async function finish() {
   display: flex;
   align-items: center;
   gap: 12px;
-  color: var(--accent);
+  /* 品牌方向（Precision Geometry）要求主标识保持单色：这里用主题墨色，
+     深色主题自动反白。橙色 accent 不再染主标识，只留给 UI 强调元素。 */
+  color: var(--ink);
   min-width: 0;
 }
 
+/* 28px 用 favicon 加粗版：墨迹约占 87% 盒宽（viewBox 40 40 430 430 本身带小留白），
+   视觉大小约 24px，比旧的 40px 盒 / 18px 墨迹更醒目，同时不压过 16px 的字标。 */
 .startup-logo {
-  width: 40px;
-  height: 40px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
 }
 

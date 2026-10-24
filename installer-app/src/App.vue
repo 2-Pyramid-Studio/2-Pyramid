@@ -416,7 +416,7 @@ const retryFromUpdateOverview = () => {
         · 层级低于内容 ⇒ 内容吃掉 mousedown，窗口拖不动；
         · 层级高于内容 ⇒ 顶栏的文字点不到（顶栏只有品牌，没有可点的东西），
           但关闭按钮必须再高一层，否则按不动。
-      高度 64px = 顶栏的 22px 上留白 + 40px 品牌块 + 2px 余量。
+      高度 64px 覆盖顶栏品牌区（22px 上留白 + 28px 品牌块 + 余量），留足拖动热区。
     -->
     <div class="drag-region" data-tauri-drag-region="true"></div>
     <button class="window-close" @click="closeWindow" aria-label="关闭窗口" title="关闭">×</button>
@@ -425,22 +425,15 @@ const retryFromUpdateOverview = () => {
     <header class="top">
       <div class="brand">
         <!--
-          描边必须带 vector-effect="non-scaling-stroke"。
-          这个 viewBox 是 680×680，而元素只显示 40×40，缩放比 0.0588 ——
-          原来的 stroke-width="7" 实际渲染出来是 0.41px，内线 5 只有 0.29px，
-          亚像素：无论什么颜色都看不见，logo 看上去像一团灰雾。
-          non-scaling-stroke 让 stroke-width 以 CSS 像素表达，不再随 viewBox 缩放。
-          （主程序 StartupPage.vue 踩过同一个坑，这里取它验证过的 1.6 / 1.15。）
-
-          **它必须写在每个 <line> 上，不能写在 <g> 上** —— vector-effect 不是
-          继承属性，挂 <g> 上等于没挂。
+          小尺寸用品牌包的 **favicon 加粗版**（brand/2-pyramid-favicon.svg）：
+          viewBox 40 40 430 430、描边 20/16，与主程序 StartupPage 同一份几何。
+          因为 viewBox 与 28px 显示尺寸同档，描边按 viewBox 单位缩放即可得到设计
+          线宽（约 1.3px），不再需要旧稿的 non-scaling-stroke 亚像素补丁。
         -->
-        <svg class="brand-mark" viewBox="0 0 680 680" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <g stroke="currentColor" stroke-linecap="round">
-            <line x1="260" y1="520" x2="200" y2="390" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-            <line x1="260" y1="520" x2="500" y2="190" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-            <line x1="200" y1="390" x2="500" y2="190" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-            <line x1="260" y1="520" x2="374" y2="274" stroke-width="1.15" vector-effect="non-scaling-stroke"/>
+        <svg class="brand-mark" viewBox="40 40 430 430" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <g stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M140 430 L76 286 L430 76 Z" stroke-width="20"/>
+            <path d="M140 430 L282 198" stroke-width="16"/>
           </g>
         </svg>
         <div class="brand-text">
@@ -910,16 +903,18 @@ body {
   padding: 22px 26px 0;
 }
 
-/* 与 OOBE 的 .top-brand 同构：logo 40 → 名称 16 → 版本行 11.5 */
+/* 与 OOBE 的 .top-brand 同构：logo 28 → 名称 16 → 版本行 11.5
+   主标识保持单色（品牌方向 Precision Geometry）：颜色用主题墨色，不用 accent。 */
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
   min-width: 0;
-  color: var(--accent);
+  color: var(--ink);
 }
 
-.brand-mark { width: 40px; height: 40px; flex-shrink: 0; }
+/* 28px 用 favicon 加粗版：墨迹约占 87% 盒宽，视觉大小约 24px（与主程序 OOBE 顶部一致）。 */
+.brand-mark { width: 28px; height: 28px; flex-shrink: 0; }
 
 .brand-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 

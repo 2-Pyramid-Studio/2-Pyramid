@@ -112,8 +112,10 @@
       }
       .boot > * { position: relative; z-index: 1; }
 
-      /* 132px 盒子里墨迹只占约 46%×50%（图形四周留白很大），所以视觉大小约 61px */
-      .boot-mark { width: 132px; height: 132px; }
+      /* 新版 mark（brand/2-pyramid-mark.svg）墨迹占 512 画布的 71.5%×71.5%，
+         所以 85px 盒子的视觉大小约 61px —— 与原 132px 旧素材（墨迹 45%×50%）
+         的视觉大小一致，加载页构图不变；飞行动画按 DOM 盒子换算，会自动适配。 */
+      .boot-mark { width: 85px; height: 85px; }
       .boot-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
 
       .boot-name {

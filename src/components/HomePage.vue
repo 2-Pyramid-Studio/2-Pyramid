@@ -274,8 +274,11 @@ onUnmounted(() => {
  * 首页上唯一放大的一块。其余三个角都刻意压得很小 ——
  * 品牌标识承担识别，不需要靠其他元素一起大声说话。
  *
- * logo 的视觉墨迹在 512 画布里只占 46%×50%（四周留白 L28.7% T27.3% R25.8% B22.9%），
- * 所以 64px 的盒子实际只有约 30px 可见，用负 margin 把四周的空白吃掉。
+ * 新版品牌 mark（`brand/2-pyramid-mark.svg`，Precision Geometry）的墨迹在 512
+ * 画布里占 71.5%×71.5%（实测留白 L13.7% T13.7% R14.8% B14.8%），比旧素材
+ * （45%×50%）的留白小得多：44px 盒子就能给出约 31.5px 可见墨迹，画面占比与
+ * 原 64px 旧素材（约 29×32px）基本一致，只是线宽按新设计更粗。负 margin 仍然
+ * 只负责吃掉画布留白，不改变视觉落点。
  */
 .brand {
   position: absolute;
@@ -292,11 +295,11 @@ onUnmounted(() => {
 /* logo 与名字同处一行 */
 .brand-top { display: flex; align-items: center; gap: 16px; }
 
-.brand-mark { width: 64px; height: 64px; margin: -13px 0 -15px -18px; object-fit: contain; }
+.brand-mark { width: 44px; height: 44px; margin: -1.5px 0 -6.5px -5.5px; object-fit: contain; }
 .brand-name { font-size: 30px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.1; }
 /*
  * 标语与版本：直接作为 .brand 的子元素，左缘 = 块的左缘（40px）。
- * logo 的墨迹左缘也是 40.4px（盒子 22 + 画布留白 28.7% × 64），
+ * logo 墨迹左缘 = 盒子 left(-5.5) + 512 画布左留白 13.7% × 44 ≈ 40.5px，
  * 所以这三行在视觉上落在同一条左侧线上 —— 这就是「对齐边框」。
  */
 .brand-tag {
@@ -317,13 +320,11 @@ onUnmounted(() => {
   color: var(--ink-3);
 }
 /*
- * logo 的视觉墨迹在 512 画布里只占 45%×49%（四周留白 L28.9% T27.3% R26.0% B23.0%），
- * 所以 64px 的盒子实际只有约 29×31px 可见，靠负 margin 把四周空白吃掉。
- *
- * 上边距是 −13 而不是 −17：
- * 「2-Pyramid」里的 y 有下伸部，它的**墨迹**中心比盒子中心低约 3.8px。
- * 拿盒子对盒子会让 logo 看着偏高 4px（实测 logo 墨迹中心 38.3 / 名称墨迹中心 42.3），
- * 按墨迹中心对齐才对得上。
+ * 墨迹（512 画布）L13.7% T13.7% R14.8% B14.8%，44px 盒内可见约 31.5×31.5px。
+ * 上边距取 −1.5 而不是按留白算出的 −6：
+ * 「2-Pyramid」里的 y 有下伸部，它的**墨迹**中心比盒子中心低；拿盒子对盒子
+ * 会让 logo 看着偏高。现在墨迹顶边落在行顶 +4.5px（与原 64px 旧素材一致），
+ * 行高 44 − 1.5 − 6.5 = 36px 也与旧版相同，下面两行不会跳位。
  */
 .brand-meta i { width: 3px; height: 3px; border-radius: 50%; background: var(--ink-4); }
 
