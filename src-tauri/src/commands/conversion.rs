@@ -166,10 +166,12 @@ pub async fn convert_zip(
             true,
             // 旧入口（`convert_zip`）没有暴露删除 shaders 的 UI，保持历史行为。
             false,
-            // 物品定义 / CIT 三项也走默认值：旧入口不提供这些开关。
-            true,
+            // 物品定义 / CIT 三项与元数据也走**当前默认值**：旧入口不提供这些开关。
+            // 默认 = 物品定义转换开、CIT 转换关（A1 止血）、删除关、写 2pyr-gen。
             true,
             false,
+            false,
+            true,
         )
     }).await;
 
@@ -231,12 +233,19 @@ pub async fn convert_resource_pack(
 /// 每个包在**全部任务之后**把 `assets/minecraft/shaders` 与顶层 `shaders/`
 /// 整棵删掉。删除本身发生在 `run_native` 的清理点（见那里的注释），这里只透传。
 ///
-/// 1.21.4+ 物品定义的两个开关（**默认都 true**）与 CIT 删除（**默认 false**）
-/// 也在这里落到 `MixedRunOptions`，语义见 `native_run` 里对应的字段注释：
+/// 1.21.4+ 物品定义的两个开关与 CIT 删除（**默认：物品定义开、CIT 转换关、
+/// 删除关**）也在这里落到 `MixedRunOptions`，语义见 `native_run` 里对应的字段注释：
 /// * `convert_item_definitions`：不写 `items/*.json`（旧 `overrides` 不迁移）；
 /// * `convert_cit`：不生成 CIT 定义，但两棵 CIT 源目录**原样保留**；
+///   **2.203.0 之后默认关**（A1 止血：用户实机报告弓/钻石剑黑紫，实机原因尚未
+///   复现；离线 codec 复核见 `native_run::MixedRunOptions::convert_cit`）；
 /// * `delete_cit`：跳过 CIT 转换并把两棵源目录**整个删掉**（优先级高于
 ///   `convert_cit`）。
+///
+/// `write_gen_metadata`（**默认 true**）：是否在产物根写 `2pyr-gen.json`
+/// （本次转换的参数记录，契约见 [`crate::gen_metadata`]）。缺省按 true——旧前端
+/// 不发这个参数时行为与新默认一致；关闭后产物里不会出现该文件。它**只对 Java
+/// 目标**生效（Bedrock 目标由 `process_zip_timed` 判掉并留日志）。
 #[tauri::command]
 pub async fn convert_resource_packs_batch(
     file_paths: Vec<String>,
@@ -248,6 +257,7 @@ pub async fn convert_resource_packs_batch(
     convert_item_definitions: Option<bool>,
     convert_cit: Option<bool>,
     delete_cit: Option<bool>,
+    write_gen_metadata: Option<bool>,
 ) -> Result<Vec<serde_json::Value>, String> {
     use std::time::Instant;
 
@@ -259,11 +269,16 @@ pub async fn convert_resource_packs_batch(
     let adapt_shaders = adapt_shaders.unwrap_or(true);
     // 破坏性选项：默认关闭。缺省/旧前端只发前面几个参数时，行为与改动前一致。
     let delete_shaders = delete_shaders.unwrap_or(false);
-    // 物品定义两项默认开：缺省时与 8a27615 的产物一致。
+    // 物品定义默认开：缺省时与 8a27615 的产物一致。
     let convert_item_definitions = convert_item_definitions.unwrap_or(true);
-    let convert_cit = convert_cit.unwrap_or(true);
+    // **CIT 转换默认关**（2026-10 A1 止血）：CIT 的附魔条件可能让 1.21.9/1.21.10
+    // 的物品定义整份 codec 失败（黑紫格），理由见 `native_run::MixedRunOptions::convert_cit`。
+    // 需要它的用户在转换页显式打开。
+    let convert_cit = convert_cit.unwrap_or(false);
     // CIT 删除是破坏性的：缺省一律关，旧前端不发这个参数时绝不删文件。
     let delete_cit = delete_cit.unwrap_or(false);
+    // 元数据默认**写**（与 GUI 默认一致）：缺省时旧前端也得到可追溯的产物。
+    let write_gen_metadata = write_gen_metadata.unwrap_or(true);
 
     log_info!("{}", "=".repeat(60));
     log_info!("Batch conversion started");
@@ -304,11 +319,13 @@ pub async fn convert_resource_packs_batch(
     // 破坏性动作必须留痕：日志里能回答"这一批为什么没有 shaders"
     log_info!("delete_shaders: {}", delete_shaders);
     // 三个新开关同样逐条留痕：产物差异必须能只靠日志解释。
+    // （`write_gen_metadata` 也在这里：产物里多/少一个文件，日志必须能回答为什么。）
     log_info!(
-        "convert_item_definitions: {}, convert_cit: {}, delete_cit: {}",
+        "convert_item_definitions: {}, convert_cit: {}, delete_cit: {}, write_gen_metadata: {}",
         convert_item_definitions,
         convert_cit,
-        delete_cit
+        delete_cit,
+        write_gen_metadata
     );
     log_info!("{}", "=".repeat(60));
 
@@ -370,6 +387,8 @@ pub async fn convert_resource_packs_batch(
                 convert_item_definitions,
                 convert_cit,
                 delete_cit,
+                // 2pyr-gen 元数据：Java 目标才写，Bedrock 目标由管线层判掉。
+                write_gen_metadata,
             ) {
                 Ok((result_path, timing)) => {
                     let elapsed = file_start.elapsed();

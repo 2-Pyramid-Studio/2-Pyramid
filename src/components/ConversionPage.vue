@@ -261,6 +261,40 @@
               <span class="slider"></span>
             </label>
           </div>
+
+          <!--
+            2pyr-gen：把本次转换参数写进输出包根目录。
+
+            为什么排在最后、且不带破坏性徽标：它不删任何东西，只是往产物里多写
+            一个 Minecraft 客户端不读的 JSON 文件；但它确实会出现在用户要分发的
+            包里，所以文案必须把"写了什么、不含什么、怎么关"说全——EULA 与隐私
+            声明里是同一份承诺，改这里要同步改法律文档（中英两份）。
+
+            默认开：产物被二次分发或排障时，没有这份记录就回答不了"哪一版、什么
+            参数转的"。配置项 `write_gen_metadata` 两端都写（配置 + localStorage），
+            挂载时以配置为准，见 `loadOutputSettings`。
+          -->
+          <div class="option-row">
+            <div class="option-info">
+              <div class="option-title">
+                {{ t('conversion.genMetadataLabel') }}
+                <span
+                  class="help-icon"
+                  :title="t('conversion.genMetadataHelp')"
+                  :aria-label="t('conversion.genMetadataLabel')"
+                >?</span>
+              </div>
+              <p class="option-hint">{{ t('conversion.genMetadataHint') }}</p>
+            </div>
+            <label class="switch">
+              <input
+                type="checkbox"
+                v-model="writeGenMetadata"
+                :aria-label="t('conversion.genMetadataLabel')"
+              />
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
 
         <div class="stage-actions">
@@ -472,20 +506,33 @@ const adaptShaders = ref(localStorage.getItem('conversion.adaptShaders') !== 'fa
  */
 const deleteShaders = ref(localStorage.getItem('conversion.deleteShaders') === 'true');
 /**
- * 1.21.4+ 物品定义 / CIT 三个开关（默认：转换开、删除关）。
+ * 1.21.4+ 物品定义 / CIT 三个开关（默认：物品定义升级开、CIT 转换关、删除关）。
  *
  * 三项都写配置文件（见 `AppConfig` 的字段注释）：它们是**产物形态**的选择，
  * 应该跟着备份/重置/迁移走。localStorage 只用于首帧快速恢复，挂载时以配置为准
  * （`loadOutputSettings`），否则重装后会出现"本机看着是关的、配置里其实开着"。
  *
- * 关闭 `convertCit` **不等于**删除：源文件原样保留，OptiFine 用户仍能用；
- * 删除是下面单独一项，且**优先于**转换（`native_run::plan_task_enabled`）。
+ * **CIT 转换默认关**（2.203.0 之后）：CIT 里的附魔条件在 1.21.5+ 只能写成
+ * 绑定附魔注册表的组件条件，离线无法验证真实客户端能否加载；用户实测
+ * 1.20.1 布吉岛包转 1.21.9–1.21.10 后弓与钻石剑是紫黑格。关闭**不等于**删除：
+ * 源文件原样保留，OptiFine 用户仍能用；删除是下面单独一项，且**优先于**转换
+ * （`native_run::plan_task_enabled`）。
  */
 const convertItemDefinitions = ref(
   localStorage.getItem('conversion.convertItemDefinitions') !== 'false',
 );
-const convertCit = ref(localStorage.getItem('conversion.convertCit') !== 'false');
+const convertCit = ref(localStorage.getItem('conversion.convertCit') === 'true');
 const deleteCit = ref(localStorage.getItem('conversion.deleteCit') === 'true');
+/**
+ * 是否在产物根目录写 `2pyr-gen.json`（转换参数记录，**默认开**）。
+ *
+ * 它属于"往用户的包里写文件"：配置 + localStorage 双写（配置是用户偏好的
+ * 真源，重装/迁移后不该丢），EULA 与隐私声明有对应披露。默认开的理由见
+ * `AppConfig::write_gen_metadata` 的注释；关闭后产物里不会出现该文件。
+ */
+const writeGenMetadata = ref(
+  localStorage.getItem('conversion.writeGenMetadata') !== 'false',
+);
 const selectedItems = ref<any[]>([]);
 const showResultModal = ref(false);
 const conversionResults = ref<any[]>([]);
@@ -675,6 +722,13 @@ const loadOutputSettings = async () => {
     if (typeof cfg?.delete_cit === 'boolean' && cfg.delete_cit !== deleteCit.value) {
       deleteCit.value = cfg.delete_cit;
     }
+    // 2pyr-gen 元数据开关同一套规则：配置是真源，缓存只是首帧快照。
+    if (
+      typeof cfg?.write_gen_metadata === 'boolean'
+      && cfg.write_gen_metadata !== writeGenMetadata.value
+    ) {
+      writeGenMetadata.value = cfg.write_gen_metadata;
+    }
   } catch {
     // ignore
   }
@@ -760,6 +814,14 @@ onMounted(async () => {
     localStorage.setItem('conversion.deleteCit', String(v));
     invoke('update_config', { patch: { deleteCit: v } }).catch((e) => {
       console.warn('[conversion] 保存 delete_cit 失败', e);
+    });
+  });
+  // 2pyr-gen 元数据：默认开，关上就必须真的不写——它是"往用户包里写文件"，
+  // 开关失效等于承诺没兑现，所以同样走配置双写。
+  watch(writeGenMetadata, (v) => {
+    localStorage.setItem('conversion.writeGenMetadata', String(v));
+    invoke('update_config', { patch: { writeGenMetadata: v } }).catch((e) => {
+      console.warn('[conversion] 保存 write_gen_metadata 失败', e);
     });
   });
 
@@ -950,6 +1012,8 @@ const startConversion = async () => {
       convertItemDefinitions: convertItemDefinitions.value,
       convertCit: convertCit.value,
       deleteCit: deleteCit.value,
+      // 2pyr-gen 元数据：默认 true（后端 `unwrap_or(true)`），显式传当前开关状态。
+      writeGenMetadata: writeGenMetadata.value,
     });
 
     for (let i = 0; i < selectedItems.value.length; i++) {

@@ -102,11 +102,28 @@ pub struct MixedRunOptions {
     /// 它可以在没有默认定义时自己造一份（见 `merge_into_definition` 的 None 分支）。
     pub convert_item_definitions: bool,
     /// **是否把 OptiFine CIT 转成 1.21.4+ 物品定义**（`generate_cit_item_definitions`，
-    /// 默认 **true**）。
+    /// 默认 **false**）。
     ///
     /// 关闭 = 不生成定义，但 `optifine/cit/**` 与 `mcpatcher/cit/**` **原样保留**。
     /// 这不是"删除"，装 OptiFine 的客户端仍会用那些文件；用户关它的典型理由是
     /// "新版定义在自己这边不生效，不如留给 OptiFine"。
+    ///
+    /// ## 为什么默认关（2026-10 止血，待实机验证）
+    ///
+    /// 用户报告 1.20.1 布吉岛包转 1.21.9–1.21.10 后弓与钻石剑黑紫。2.203.0 已修掉
+    /// 一个**确定**的 codec 错误（`enchantments` 裸字符串 → 数组；修复前真实客户端
+    /// codec 报 `Not a json array`，与黑紫症状吻合），但修复后用户仍报告黑紫。
+    ///
+    /// 离线复核（真实 1.21.5 / 1.21.10 客户端 codec）：修复后的
+    /// `condition(component, predicate=enchantments)` 在补上 `enchantment` 动态注册表
+    /// （RegistryOps，42 个从 jar 读出的真实附魔 id）后**解析通过**，形状不再是可复现
+    /// 的失败点；但本仓库没有实机渲染验证，用户报告的原因**尚未复现**。因此按用户
+    /// 要求先默认关——这是**产品决策**，不是 codec 硬约束。关闭时两棵 CIT 源目录原样
+    /// 保留；需要的用户在转换页显式打开并自行实机验证。
+    ///
+    /// 这个默认值有代价：CI 里 46 个任务的端到端覆盖不再包含 CIT 那条腿，因此
+    /// `modern_item_definitions_survive_the_whole_pipeline` 显式打开它来守住能力本身；
+    /// 默认值由 `cit_switches_default_to_off_on_off` 单独钉住。
     ///
     /// **与 `delete_cit` 同开时以删除为准**：见 [`Self::delete_cit`]。
     pub convert_cit: bool,
@@ -131,6 +148,21 @@ pub struct MixedRunOptions {
     /// **关闭时必须与改动前逐字节相同**：不参与任何任务、不改计划、不改序列化选项，
     /// 只在为真时多登记一次 tombstone。
     pub delete_cit: bool,
+    /// **转换产物元数据**（包根 `2pyr-gen.json` 的内容），`None` = 不写（默认）。
+    ///
+    /// ## 为什么放在驱动里，而不是让每个调用方自己在 `tail` 里 `tx.put`
+    ///
+    /// 1. **时机必须与 `pack.mcmeta` 改写同一处**：`tail` 之后才是 Zip 序列化 /
+    ///    Dir 物化，写在这里天然覆盖两条输出路径。如果写成"生产入口写完 zip 再
+    ///    往里塞一个条目"，要么重写 zip、要么漏掉 `Output::Dir`。
+    /// 2. **默认 `None` 是产物不变性质的闸门**：`run_native` 还有 overlay / foray /
+    ///    单测 / `process_extracted_dir_only` 等调用方，它们**一个字节都不该变**。
+    ///    只有生产入口（`version_converter::process_zip_timed`）在用户开启时显式
+    ///    填入（且只对 Java 目标填）。
+    ///
+    /// 内容构造与字段清单见 [`crate::gen_metadata`]；字段清单同时是
+    /// `legal/PRIVACY.md` / `legal/EULA.md` 披露的那一份，改任何一侧都要同步。
+    pub(crate) gen_metadata: Option<crate::gen_metadata::GenMetadata>,
     pub native: NativeSwitches,
     /// 原生任务写出声明范围即报错（D12 契约）。关掉则只记录在
     /// [`MixedRunReport::undeclared`] 里，便于诊断。
@@ -155,8 +187,13 @@ impl Default for MixedRunOptions {
             adapt_shaders: true,
             delete_shaders: false,
             convert_item_definitions: true,
-            convert_cit: true,
+            // A1 止血（2026-10）：默认关。CIT 的附魔条件可能让 1.21.9+ 的物品定义
+            // 整份解析失败（黑紫格），详见字段注释。
+            convert_cit: false,
             delete_cit: false,
+            // 元数据默认不写：只有这样，"其它调用方的产物与改动前逐字节相同"
+            // 才不依赖调用方记得传 None。
+            gen_metadata: None,
             native: NativeSwitches::none(),
             strict_scopes: true,
             legacy_one_by_one: false,
@@ -591,8 +628,12 @@ where
     //     这条是**修回归**：M3 换计划表之后这个开关只被传递、没有消费者，
     //     见 `plan_task_enabled` 的文档。
     //
-    // 默认值（true / true / false / true）下 `planned == plan`，产物与改动前逐字节
-    // 相同；这条性质由 `cit_switches_default_to_on_on_off` 与端到端用例直接钉住。
+    // 默认组合（convert_item_definitions=true / convert_cit=false / delete_cit=false /
+    // adapt_shaders=true）下 **CIT 任务默认不派发**：这是 2026-10 的 A1 止血改动
+    // （理由见 `MixedRunOptions::convert_cit` 的字段注释）。其余两条过滤在默认下是
+    // 恒等，因此"不加新选项时产物与改动前一致"仍成立——差异只来自这个有意的默认值，
+    // 由 `cit_switches_default_to_off_on_off` 与 `cit_and_item_definition_switches_gate_only_their_own_output`
+    // 两条用例直接钉住。
     // ══════════════════════════════════════════════════════════════════════
     let planned_len = planned.len();
     let plan: Vec<String> = planned
@@ -1102,6 +1143,26 @@ where
     {
         let mut tx = pack.tx("tail");
         tail(&mut tx).map_err(AromError::internal)?;
+        // **2pyr-gen：与 `pack.mcmeta` 改写同一个事务、同一时机。**
+        //
+        // 放进同一个事务而不是另开一个，是为了让"产物 = 视图"只有一次提交：
+        // 这里之后紧跟着 `write_zip` / `materialize`，任何"晚一步再塞文件"的做法
+        // 都要重写产物。写入是纯追加（不读不改包内其它条目），因此不会影响
+        // `pack.mcmeta` 之外的任何字节——`gen_metadata_lands_in_both_zip_and_dir_outputs`
+        // 用逐条摘要钉住这个性质。
+        if let Some(meta) = &opts.gen_metadata {
+            let bytes = meta.to_json_bytes().map_err(AromError::internal)?;
+            let len = bytes.len();
+            tx.put(crate::gen_metadata::FILE_NAME, bytes)
+                .map_err(|e| AromError::internal(format!("write 2pyr-gen: {e}")))?;
+            crate::log_info!(
+                "2pyr-gen: 已写入产物根 {}（{} 字节，source={} target={}）",
+                crate::gen_metadata::FILE_NAME,
+                len,
+                meta.source_pack_format,
+                meta.target_pack_format
+            );
+        }
         let layer = tx.into_layer();
         if !layer.writes().is_empty() {
             sync_baseline_with_layer(&pack, &layer, &mut baseline)?;
@@ -1211,8 +1272,12 @@ pub(crate) const CIT_ROOTS: [&str; 2] = [
 /// | `generate_cit_item_definitions` | `convert_cit && !delete_cit` |
 /// | `adapt_java_shaders` | `adapt_shaders` |
 ///
-/// 其余任务一律 `true`。**默认值组合（true / true / false / true）下本函数恒为
-/// true**，因此"不加新选项时产物逐字节相同"这条性质不依赖任何调用方记得传默认值。
+/// 其余任务一律 `true`。**默认组合（convert_item_definitions=true / convert_cit=false /
+/// delete_cit=false / adapt_shaders=true）下 `generate_cit_item_definitions` 默认不派发**
+/// （2026-10 A1 止血，理由见 [`MixedRunOptions::convert_cit`]），因此"不加新选项时产物
+/// 逐字节相同"只对没有 CIT 转换需求的包成立；默认值本身由
+/// `cit_switches_default_to_off_on_off` 钉住，能力本身由显式打开 CIT 的
+/// `modern_item_definitions_survive_the_whole_pipeline` 守住。
 ///
 /// **`adapt_shaders` 是一条历史遗留的修复（2026-10）**：它在 2.1.3 引入时确实
 /// 门控着任务注册，但 M3 把任务注册表换成 `Scheduler::plan` 之后，这个字段只剩
@@ -2381,6 +2446,7 @@ mod tests {
     }
 
 
+    /// 与 [`native_output_v2_opts`] 同口径，但只暴露历史那组参数（其余取结构体默认）。
     fn native_output_v2(
         input: &Path,
         tmp: &Path,
@@ -2390,16 +2456,34 @@ mod tests {
         legacy_one_by_one: bool,
         tag: &str,
     ) -> (PathBuf, MixedRunReport) {
+        native_output_v2_opts(
+            input,
+            tmp,
+            MixedRunOptions {
+                source_version: source,
+                target_version: target,
+                native,
+                legacy_one_by_one,
+                ..MixedRunOptions::default()
+            },
+            tag,
+        )
+    }
+
+    /// **完整选项版**的 `run_native` 夹具。
+    ///
+    /// 用于"某项默认值已改、但仍要测它开启时行为"的用例：调用方显式给出那个开关，
+    /// 其余保持 [`MixedRunOptions::default`]。`tail` 与生产入口一致（只改 mcmeta 的目标格式）。
+    fn native_output_v2_opts(
+        input: &Path,
+        tmp: &Path,
+        opts: MixedRunOptions,
+        tag: &str,
+    ) -> (PathBuf, MixedRunReport) {
         let work = tmp.join(format!("v2_work_{tag}"));
         let out = tmp.join(format!("v2_{tag}.zip"));
-        let opts = MixedRunOptions {
-            source_version: source,
-            target_version: target,
-            native,
-            legacy_one_by_one,
-            ..MixedRunOptions::default()
-        };
-        let report = run_native(input, &work, &Output::Zip(out.clone()), &opts, |tx| {
+        let target = opts.target_version;
+        let report = run_native(input, &work, &Output::Zip(out.clone()), &opts, move |tx| {
             if tx.exists("pack.mcmeta") {
                 let cur = tx.text("pack.mcmeta").map_err(|e| e.to_string())?;
                 let next = crate::pack::version_converter::rewrite_pack_mcmeta_text(&cur, target)?;
@@ -2554,23 +2638,41 @@ mod tests {
         );
     }
 
-    /// **三个 CIT / 物品定义开关的默认值**：两个转换默认开、删除默认关。
+    /// **三个 CIT / 物品定义开关的默认值**：物品定义转换默认开、**CIT 转换默认关**、
+    /// 删除默认关。
     ///
-    /// 这是"不加新选项时产物逐字节相同"的第一道闸门。默认组合下
-    /// `plan_task_enabled` 必须对**所有**计划任务返回 true（过滤是恒等），
-    /// 否则默认产物会悄悄少掉 `items/*.json` 或 CIT 目录。
+    /// 这是"默认产物"的第一道闸门。`convert_cit=false` 是 2026-10 的 A1 止血改默认
+    /// （CIT 的附魔条件在 1.21.9+ 可能让物品定义整份失效 ⇒ 黑紫格，见
+    /// `MixedRunOptions::convert_cit` 的字段注释）；另外两个默认值守住"不改选项时
+    /// 产物不变"：物品定义与着色器任务照跑，删除类一个都不动。
     #[test]
-    fn cit_switches_default_to_on_on_off() {
+    fn cit_switches_default_to_off_on_off() {
         let opts = MixedRunOptions::default();
         assert!(opts.convert_item_definitions, "物品定义默认必须开");
-        assert!(opts.convert_cit, "CIT 转换默认必须开");
+        assert!(
+            !opts.convert_cit,
+            "CIT 转换默认必须关：附魔条件可能让 1.21.9+ 的物品定义整份失效"
+        );
         assert!(!opts.delete_cit, "删除是破坏性的，默认必须关");
 
         assert!(plan_task_enabled("generate_item_definitions", &opts));
-        assert!(plan_task_enabled("generate_cit_item_definitions", &opts));
+        assert!(
+            !plan_task_enabled("generate_cit_item_definitions", &opts),
+            "默认组合下 CIT 转换任务不得派发"
+        );
         // 其余任务不受影响（这里抽两个不同阶段的代表）
         assert!(plan_task_enabled("adapt_java_shaders", &opts), "着色器适配默认开");
         assert!(plan_task_enabled("cut_gui", &opts));
+
+        // 反向确认：显式打开时任务回来——默认关是靠默认值，不是靠删掉任务能力。
+        let on = MixedRunOptions {
+            convert_cit: true,
+            ..MixedRunOptions::default()
+        };
+        assert!(
+            plan_task_enabled("generate_cit_item_definitions", &on),
+            "显式打开 CIT 转换后必须派发"
+        );
     }
 
     /// **`adapt_shaders` 开关真的被计划过滤消费**（2026-10 修复 M3 回归）。
@@ -2583,6 +2685,9 @@ mod tests {
     fn adapt_shaders_switch_filters_only_the_shader_task() {
         let opts = MixedRunOptions {
             adapt_shaders: false,
+            // 本用例只测「着色器开关不连坐」，因此把 CIT 转换**显式打开**：
+            // A1 之后它的默认值是 false，用默认值会得到"没派发"而与本开关无关。
+            convert_cit: true,
             ..MixedRunOptions::default()
         };
         assert!(
@@ -2607,7 +2712,9 @@ mod tests {
     ///    `items/stick.json`（两条输入路径互不依赖）；
     /// 2. `convert_cit=false`：没有 `items/stick.json` / `models/cit/**` /
     ///    `textures/cit/**`，但 `items/bow.json` 照写，**两棵 CIT 源目录仍在**；
-    /// 3. 默认组合（结构体缺省）与显式 (true,true,false) 的产物逐条相同。
+    /// 3. 默认组合（结构体缺省，A1 之后 CIT 默认关）= 显式 (true, false, false) 的
+    ///    产物逐条相同，且**不等于**显式打开 CIT 的产物——后半句保证本用例能看见
+    ///    默认值变化，而不是只证明一次"两边都没 CIT"的巧合。
     #[test]
     fn cit_and_item_definition_switches_gate_only_their_own_output() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2679,13 +2786,20 @@ mod tests {
         );
         assert!(neither.iter().any(|n| is_cit_path(n)), "源目录仍在");
 
-        // ── 默认口径 = 显式全开口径（逐条字节）─────────────────────────
+        // ── 默认口径 = 显式 (物品定义开, CIT 关, 删除关) 口径（逐条字节）────
+        // A1 之后 `convert_cit` 默认关，所以默认产物必须与 `no_cit` 一致；
+        // 且必须与 `all`（显式开 CIT）不同，否则本断言对默认值的变化是瞎的。
         let (default_zip, _) =
             native_output_v2(&input, tmp.path(), 55, 34, NativeSwitches::all(), false, "cit_default");
         assert_eq!(
+            zip_entry_digests(&no_cit_zip),
+            zip_entry_digests(&default_zip),
+            "默认口径（CIT 关）必须与显式 (true,false,false) 逐条相同"
+        );
+        assert_ne!(
             zip_entry_digests(&all_zip),
             zip_entry_digests(&default_zip),
-            "显式 (true,true,false) 必须与结构体默认口径逐条相同"
+            "默认口径必须与显式打开 CIT 的产物不同（默认值确实施加了影响）"
         );
     }
 
@@ -2767,6 +2881,152 @@ mod tests {
         assert_eq!(
             off_rest, on_rest,
             "开启 delete_cit 后，除 CIT 源目录外的条目必须逐条相同"
+        );
+    }
+
+    /// **`2pyr-gen` 的注入点在 `run_native` 的 tail**：Zip 与 Dir 两种输出都要带上，
+    /// 默认（`gen_metadata: None`）时产物与改动前逐条相同。
+    ///
+    /// 为什么不只测 Zip：`Output::Dir` 是「tail 提交层 → materialize」另一条路径，
+    /// 若把写入放到 `write_zip` 之前（而不是 tail 事务里），Dir 就会漏。生产入口
+    /// 目前 Java 目标只走 Zip，但"两条输出路径产物一致"是驱动契约，必须自己守。
+    ///
+    /// 另外钉住"只多一个文件"：元数据是纯追加，不得改变其它任何条目。
+    #[test]
+    fn gen_metadata_lands_in_both_zip_and_dir_outputs() {
+        // 默认必须是"不写"：其它 run_native 调用方（overlay / foray / 单测）的产物
+        // 不能因为新增这个字段而变化。
+        assert!(
+            MixedRunOptions::default().gen_metadata.is_none(),
+            "默认必须不写元数据，否则所有调用方的产物都会多一个文件"
+        );
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let input = tmp.path().join("fixture_meta.zip");
+        fixture(&input);
+
+        let meta = crate::gen_metadata::build(
+            34,
+            55,
+            Some("Java 1.21.5"),
+            crate::gen_metadata::GenOptions {
+                fix_alpha_layers: false,
+                adapt_shaders: true,
+                delete_shaders: false,
+                convert_item_definitions: true,
+                convert_cit: false,
+                delete_cit: false,
+            },
+        );
+        let expected = meta.to_json_bytes().expect("serialize metadata");
+
+        fn write_target_mcmeta(tx: &mut crate::arom::Tx<'_>, target: u32) -> Result<(), String> {
+            if tx.exists("pack.mcmeta") {
+                let cur = tx.text("pack.mcmeta").map_err(|e| e.to_string())?;
+                let next = crate::pack::version_converter::rewrite_pack_mcmeta_text(&cur, target)?;
+                tx.put("pack.mcmeta", next.into_bytes())
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+
+        let run_zip = |with_meta: bool, tag: &str| -> PathBuf {
+            let work = tmp.path().join(format!("meta_work_{tag}"));
+            let out = tmp.path().join(format!("meta_{tag}.zip"));
+            let opts = MixedRunOptions {
+                source_version: 34,
+                target_version: 55,
+                native: NativeSwitches::all(),
+                gen_metadata: with_meta.then(|| meta.clone()),
+                ..MixedRunOptions::default()
+            };
+            run_native(
+                &input,
+                &work,
+                &Output::Zip(out.clone()),
+                &opts,
+                |tx| write_target_mcmeta(tx, 55),
+            )
+            .expect("run_native zip");
+            out
+        };
+        let run_dir = |with_meta: bool, tag: &str| -> PathBuf {
+            let work = tmp.path().join(format!("meta_work_{tag}"));
+            let out = tmp.path().join(format!("meta_{tag}_dir"));
+            let opts = MixedRunOptions {
+                source_version: 34,
+                target_version: 55,
+                native: NativeSwitches::all(),
+                gen_metadata: with_meta.then(|| meta.clone()),
+                ..MixedRunOptions::default()
+            };
+            run_native(
+                &input,
+                &work,
+                &Output::Dir(out.clone()),
+                &opts,
+                |tx| write_target_mcmeta(tx, 55),
+            )
+            .expect("run_native dir");
+            out
+        };
+
+        // ── Zip：开启时多恰好一个文件，内容就是 builder 的序列化结果 ──────
+        let zip_with = run_zip(true, "with");
+        let zip_without = run_zip(false, "without");
+        let names_with = zip_entry_names(&zip_with);
+        let names_without = zip_entry_names(&zip_without);
+        assert!(
+            names_with.iter().any(|n| n == crate::gen_metadata::FILE_NAME),
+            "开启时产物根必须有 {}：{names_with:?}",
+            crate::gen_metadata::FILE_NAME
+        );
+        assert!(
+            !names_without
+                .iter()
+                .any(|n| n == crate::gen_metadata::FILE_NAME),
+            "默认 None 时产物里不得有该文件：{names_without:?}"
+        );
+        assert_eq!(
+            names_with.len(),
+            names_without.len() + 1,
+            "元数据是纯追加：开启只应多一个条目"
+        );
+        let rest_with: Vec<_> = zip_entry_digests(&zip_with)
+            .into_iter()
+            .filter(|(n, _, _)| n != crate::gen_metadata::FILE_NAME)
+            .collect();
+        assert_eq!(
+            rest_with,
+            zip_entry_digests(&zip_without),
+            "除元数据外，产物必须逐条相同（开关不得扰动其它字节）"
+        );
+        let zip_meta_bytes = {
+            use std::io::Read as _;
+            let f = std::fs::File::open(&zip_with).expect("open");
+            let mut ar = zip::ZipArchive::new(f).expect("zip");
+            let mut e = ar
+                .by_name(crate::gen_metadata::FILE_NAME)
+                .expect("by_name");
+            let mut buf = Vec::new();
+            e.read_to_end(&mut buf).expect("read");
+            buf
+        };
+        assert_eq!(
+            zip_meta_bytes, expected,
+            "写入的字节必须等于 builder 的序列化结果"
+        );
+
+        // ── Dir：同一条 tail 路径，必须落盘且内容一致 ────────────────────
+        let dir_with = run_dir(true, "with");
+        let dir_bytes = std::fs::read(dir_with.join(crate::gen_metadata::FILE_NAME))
+            .expect("Dir 产物必须含 2pyr-gen.json");
+        assert_eq!(dir_bytes, expected, "Zip 与 Dir 的元数据内容必须一致");
+        // Dir 默认（None）不得出现该文件
+        let dir_without = run_dir(false, "without");
+        assert!(
+            !dir_without.join(crate::gen_metadata::FILE_NAME).exists(),
+            "默认 None 时 Dir 产物不得有该文件"
         );
     }
 
@@ -3001,8 +3261,17 @@ mod tests {
                 );
             }
         }
-        let (out, _report) =
-            native_output_v2(&input, tmp.path(), 55, 34, NativeSwitches::all(), false, "items");
+        // A1 之后 `convert_cit` 默认关，本用例测的是"CIT 那条腿能走完整管线"，
+        // 因此**显式打开**；否则它只会证明"关着的时候什么都没生成"，而任务能力本身
+        // 没有任何端到端覆盖（真实包的默认值语义由 `cit_switches_default_to_off_on_off` 守）。
+        let opts = MixedRunOptions {
+            source_version: 34,
+            target_version: 55,
+            convert_cit: true,
+            native: NativeSwitches::all(),
+            ..MixedRunOptions::default()
+        };
+        let (out, _report) = native_output_v2_opts(&input, tmp.path(), opts, "items");
         let pack = Pack::open_zip(&out, &SafeLimits::preserving_current(), None).expect("open out");
 
         // ① `overrides` 的那条腿：弓的定义存在，且外层接上了包的 CMD 表

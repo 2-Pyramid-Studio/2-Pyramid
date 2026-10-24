@@ -93,6 +93,7 @@ mod commands;
 /// 资源包 I/O 与分析工具（原 converters/，§9.128 只保留生产必需的四块）。
 mod pack;
 mod foray;
+mod gen_metadata;
 pub mod native_run;
 /// **原生实现主体**：46 个任务的 A-ROM 实现（原 `pilots/`，§9.127 改名 `natives/` 并分组）。
 ///

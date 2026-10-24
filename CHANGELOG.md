@@ -2,9 +2,20 @@
 
 ### Added
 
+- **转换产物写入 `2pyr-gen.json`（转换参数记录，默认开、可关）**：Java 目标转换成功后，在**产物包根目录**写入本次转换的参数——生成器名与版本/BUILD、源与目标的 `pack_format`（以及能可靠取得的目标版本标签）、本次六个转换开关、UTC 时间戳。**不含**路径、Windows 用户名、机器名、硬件 ID、UUID、IP 等任何个人信息；Minecraft 客户端不读取包根未知文件，它不参与资源包加载，删除也不影响包的使用。
+  - 关闭方式：转换页新增「写入转换参数文件」开关（配置字段 `write_gen_metadata`，配置 + localStorage 双写，随备份/迁移走）；CLI 新增 `--no-gen-metadata`。只对 Java 目标写，Bedrock 目标（`.mcpack`）不写。
+  - `legal/EULA.md` / `legal/PRIVACY.md` 及英文版四份同步披露（写入位置、字段清单、无个人信息、用途、关闭后不写、随包分发），生效日期统一 2026-10-24。
+  - 实测：debug CLI 转 15→46 产物含 665 字节 `2pyr-gen.json`，字段/时间格式/开关值与契约一致；`--no-gen-metadata` 时该文件不出现，其余条目集合逐条相同。
 - **CIT 迁移扩展到附魔与显示上下文**（`generate_cit_item_definitions`）：在 `nbt.CustomModelData` 之外，目标 ≥ 1.21.5（`pack_format` 55）时支持 `enchantments=` / `enchantmentIDs=` + `enchantmentLevels=`，生成 `condition(component, predicate=enchantments)` 的精确等级链；支持多个附魔名（同一个 predicate 内的数组，元素之间为 OR）、`hand=main|off`（`select(display_context)`）与弓的 `texture.bow_pulling_*` 多状态贴图。
   - 仍如实跳过并记录：`damage=` / `damageMask=` / `stackSize=` / `components.*`、数字附魔 id、只有 `enchantmentLevels` 没有附魔名、非 CMD 的 `nbt.*`、`model.<状态>=`、弩的多状态贴图。
   - 实测：布吉岛 1.20.1 包（format 15，24 条 CIT）转出的规则从 **0** 条变为 **12** 条。
+  - **该能力自本版起默认不生成**（`convert_cit` 默认关，见 Changed 第一条）——保留为转换页显式开启。
+
+### Changed
+
+- **OptiFine CIT 转换默认关闭（止血，待实机验证）**（`convert_cit`：true → false；GUI 转换页、配置缺省、CLI、驱动默认值四处同步）：用户报告 1.20.1 布吉岛包转 1.21.9–1.21.10 后弓与钻石剑为紫黑格。2.203.0 已修掉一个**确定**的 codec 错误（`enchantments` 裸字符串 → 数组；修复前真实客户端 codec 报 `Not a json array`，与黑紫症状吻合），但修复后用户仍报告黑紫。离线复核（真实 1.21.5 / 1.21.10 客户端 codec + 从 jar 读取 42 个真实附魔 id 构造 RegistryOps）显示修复后的数组形状**解析通过**，codec 层不再是可复现的失败点；但本环境没有实机渲染验证，该报告原因尚未复现，故按用户要求先默认关——这是**产品决策**，不是 codec 硬约束。关闭只跳过转换，`optifine/cit/**` 与 `mcpatcher/cit/**` 源文件原样保留（OptiFine 客户端仍会读取）；`delete_cit` 语义不变且仍优先于转换。CLI：`--no-cit` 保留为兼容参数（默认关之后不再改变行为），显式开启改用 `--cit`。
+- **数字 `CustomModelData` 写法复核（结论：现行写法正确，无需改动）**：`condition(property=minecraft:has_component)` → `range_dispatch(property=minecraft:custom_model_data)` 在真实 **1.21.5 / 1.21.10** 客户端 codec 下解析 **OK**；1.21.10 原版 `assets/minecraft/items/wolf_armor.json` / `compass.json` 同样使用 `property: minecraft:has_component`，证明该 property 合法。交接里「`has_component` 不是合法 predicate」的判断源于把一个 condition **property** 当成了 data component **predicate**（对照用例 C 的 JSON 本身写错了），不构成对现行方案的否定。
+- **附魔条件的离线报错已定性**：`Can't access registry ... minecraft:enchantment` 是离线校验器用 `JsonOps`、未加载动态注册表的局限；补上从 1.21.10 jar 读出的 42 个真实附魔 id（RegistryOps）后，修复后的 bow / diamond_sword / golden_axe 定义全部解析通过（负对照：不存在的附魔 id 立即失败）。修复前的裸字符串则无论哪种路径都报 `Not a json array`——那才是与用户黑紫吻合的真错误。剩余风险只在**实机渲染语义**，故 CIT 转换默认关闭等待实机确认。
 
 ## [2.203.0] - 2026-10-17（BUILD 22030）
 

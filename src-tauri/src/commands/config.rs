@@ -74,9 +74,28 @@ pub struct AppConfig {
     pub convert_item_definitions: Option<bool>,
     /// **是否把 OptiFine CIT 转成 1.21.4+ 物品定义**。
     ///
-    /// `None` 视为 **true**。关闭 = 不生成新定义，但 `optifine/cit/**` 与
-    /// `mcpatcher/cit/**` **原样保留**——装了 OptiFine 的客户端仍然会读它们。
+    /// `None` 视为 **false**（2.203.0 之后从 true 改为 false，止血）。
+    /// 关闭 = 不生成新定义，但 `optifine/cit/**` 与 `mcpatcher/cit/**`
+    /// **原样保留**——装了 OptiFine 的客户端仍然会读它们。
     /// 这正是它与 [`AppConfig::delete_cit`] 的区别：一个是"不转换"，一个是"删掉"。
+    ///
+    /// ## 为什么默认关（2026-10 止血，待实机验证）
+    ///
+    /// 背景：用户报告 1.20.1 布吉岛包转 1.21.9–1.21.10 后弓与钻石剑是黑紫格
+    /// （= 物品定义整份解析失败 ⇒ missing model）。2.203.0 已修掉一个**确定**的
+    /// codec 错误（`enchantments` 裸字符串 → 数组：修复前真实客户端 codec 报
+    /// `Not a json array`，与黑紫症状吻合），但修复后用户仍报告黑紫。
+    ///
+    /// 离线 codec 复核（2026-10，真实 1.21.5 / 1.21.10 客户端 jar）：修复后的
+    /// `condition(property=minecraft:component, predicate=minecraft:enchantments,
+    /// value=[{enchantments:[...]}])` 在补上 `enchantment` 动态注册表
+    /// （RegistryOps，42 个从 jar 读出的真实附魔 id）后**解析通过**——形状本身
+    /// 不再是可复现的失败点。但本仓库没有实机渲染验证，用户报告的黑紫原因
+    /// **尚未复现**，也不能排除修复前的产物/缓存仍在使用。
+    ///
+    /// 所以这是**产品决策**（用户要求先止血），不是 codec 硬约束：默认不再生成
+    /// 这条路径；需要的用户在转换页显式打开，并自行在游戏内验证。关闭时两棵
+    /// CIT 源目录原样保留，装 OptiFine 的客户端仍会读取它们。
     pub convert_cit: Option<bool>,
     /// **是否把两棵 CIT 源目录整个删掉**（破坏性，`None` 视为 false）。
     ///
@@ -88,6 +107,25 @@ pub struct AppConfig {
     /// 和 `delete_shaders` 一样两端都写（配置 + localStorage）：破坏性选项
     /// 重装后不该"看起来关着、实际还开着"，也不该反过来。
     pub delete_cit: Option<bool>,
+    /// **是否在产物根目录写入 `2pyr-gen.json`**（转换参数记录，`None` 视为 **true**）。
+    ///
+    /// 记录内容：生成器名与版本/BUILD、源与目标的 pack_format（以及能可靠取到的
+    /// 目标版本标签）、本次六个转换开关、UTC 时间戳。**不含**路径、用户名、
+    /// 机器标识或任何网络信息——这一点在 [`crate::gen_metadata`] 的字段清单和
+    /// `legal/PRIVACY.md` 里是同一份承诺，改动任何一侧都要同步。
+    ///
+    /// ## 为什么默认开
+    ///
+    /// 转换产物经常被二次分发、用于排障；没有过程信息时，"这份包是哪一版、
+    /// 用什么参数转的"只能靠猜。文件只有几百字节，且 Minecraft 客户端不读包根
+    /// 目录里的未知文件（解析后果见 `legal/EULA.md` 的披露条款），因此默认开
+    /// 才能真正形成可追溯链。
+    ///
+    /// 但它终究是**往用户的包里写文件**，所以：① `legal/EULA.md` /
+    /// `legal/PRIVACY.md`（中英两份）必须同步披露；② 转换页有开关，关闭后产物
+    /// 里不会出现这个文件。配置里存一份（不是只写 localStorage），是为了让
+    /// 这个偏好跟着备份/重置/迁移走。
+    pub write_gen_metadata: Option<bool>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -142,6 +180,9 @@ pub struct ConfigPatch {
     /// 与 [`AppConfig::delete_cit`] 对应。
     #[serde(alias = "deleteCit")]
     pub delete_cit: Option<bool>,
+    /// 与 [`AppConfig::write_gen_metadata`] 对应（前端 camelCase 传参）。
+    #[serde(alias = "writeGenMetadata")]
+    pub write_gen_metadata: Option<bool>,
 }
 
 pub(crate) fn config_path() -> Result<std::path::PathBuf, String> {
@@ -477,6 +518,7 @@ pub fn update_config(patch: ConfigPatch) -> Result<serde_json::Value, String> {
         patch.convert_item_definitions.as_ref().map(|_| "convert_item_definitions"),
         patch.convert_cit.as_ref().map(|_| "convert_cit"),
         patch.delete_cit.as_ref().map(|_| "delete_cit"),
+        patch.write_gen_metadata.as_ref().map(|_| "write_gen_metadata"),
         patch.output_mode.as_ref().map(|_| "output_mode"),
         patch.output_path.as_ref().map(|_| "output_path"),
         patch.palette.as_ref().map(|_| "palette"),
@@ -594,6 +636,11 @@ pub fn update_config(patch: ConfigPatch) -> Result<serde_json::Value, String> {
         // 同上：破坏性选项只接受用户明确点开的值，不做任何"迁移"。
         cfg.delete_cit = Some(v);
     }
+    if let Some(v) = patch.write_gen_metadata {
+        // 与 delete_* 不同，这里不涉及删除；但同样只记录用户的选择，
+        // 缺省（None）由调用方按 true 处理，不在写入时"猜"一个值。
+        cfg.write_gen_metadata = Some(v);
+    }
     write_config_file(&cfg)?;
     crate::log_info!("OKAY update_config [{}]", changed.join(", "));
     serde_json::to_value(cfg).map_err(|e| format!("Failed to read config: {}", e))
@@ -658,8 +705,9 @@ mod tests {
         let raw = r#"{"performance_mode":"performance","theme_mode":"dark","delete_shaders":true}"#;
         let cfg: AppConfig = serde_json::from_str(raw).expect("旧配置必须能解析");
         assert_eq!(cfg.convert_item_definitions, None, "缺省必须是 None（运行时按 true 处理）");
-        assert_eq!(cfg.convert_cit, None, "缺省必须是 None（运行时按 true 处理）");
+        assert_eq!(cfg.convert_cit, None, "缺省必须是 None（运行时按 false 处理）");
         assert_eq!(cfg.delete_cit, None, "缺省必须是 None（运行时按 false 处理）");
+        assert_eq!(cfg.write_gen_metadata, None, "缺省必须是 None（运行时按 true 处理）");
         // 顺带确认别的键没被解析失败连带清空
         assert_eq!(cfg.performance_mode.as_deref(), Some("performance"));
         assert_eq!(cfg.theme_mode.as_deref(), Some("dark"));
@@ -701,5 +749,29 @@ mod tests {
         assert_eq!(back.convert_item_definitions, Some(false));
         assert_eq!(back.convert_cit, Some(false));
         assert_eq!(back.delete_cit, Some(true));
+    }
+
+    /// **`write_gen_metadata`：camelCase / snake_case 都收，且能往返。**
+    ///
+    /// 这条字段的失败形态和 CIT 三项不同：它不删文件，但**静默不生效**同样
+    /// 糟糕——用户关掉了「写入转换参数」，下次转换产物里却还有 `2pyr-gen.json`，
+    /// 等于承诺没兑现。alias 少了不会报错，只会忽略 patch 里的值，所以钉住。
+    #[test]
+    fn write_gen_metadata_patch_and_round_trip() {
+        let camel: ConfigPatch = serde_json::from_str(r#"{"writeGenMetadata":false}"#)
+            .expect("camelCase patch");
+        assert_eq!(camel.write_gen_metadata, Some(false));
+
+        let snake: ConfigPatch = serde_json::from_str(r#"{"write_gen_metadata":true}"#)
+            .expect("snake_case patch");
+        assert_eq!(snake.write_gen_metadata, Some(true));
+
+        let cfg = AppConfig {
+            write_gen_metadata: Some(false),
+            ..AppConfig::default()
+        };
+        let raw = serde_json::to_string(&cfg).expect("serialize");
+        let back: AppConfig = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(back.write_gen_metadata, Some(false));
     }
 }

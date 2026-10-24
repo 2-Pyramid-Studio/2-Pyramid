@@ -77,6 +77,28 @@ pub fn pack_format_label_for_output(pack_format: u32) -> &'static str {
     pack_format_label(pack_format)
 }
 
+/// **是否在产物根写入 `2pyr-gen.json`**（[`process_zip_timed`] 的元数据开关）。
+///
+/// 规则：只有「Java 目标 + 用户开启」才写。
+///
+/// ## 为什么判据必须是"对外目标格式"，而不能是 `target_version`
+///
+/// Bedrock 目标（1000）在管线内部先转成 Java 26.3（97）再跑 j2b；如果拿
+/// `MixedRunOptions::target_version` 来判断，Bedrock 目标看到的会是 **97**，
+/// 与真正的 Java 26.3 目标**完全无法区分**——于是 `.mcpack` 产物根里会多出一个
+/// Java 工具生成的 JSON。判据只能放在知道"用户到底选了哪个目标"的这一层。
+///
+/// ## 为什么 Bedrock 不写
+///
+/// Bedrock 产物不是 `pack.mcmeta` 包：根目录是 `manifest.json` / `pack_icon.png` /
+/// `texts/`。在那里塞一个只有 Java 工具认识的记录文件没有消费者，只是多一个需要
+/// 解释的未知文件；而 Bedrock 本身也没有"包版本标签"这套 pack_format 语义。
+///
+/// 单测：`gen_metadata_is_only_written_for_java_targets`。
+fn should_write_gen_metadata(target_format: u32, enabled: bool) -> bool {
+    enabled && target_format != 1000
+}
+
 /// 已知目标版本标签 → pack_format（与前端 `MINECRAFT_VERSIONS` 一致）。
 const TARGET_LABELS: &[(&str, u32)] = &[
     ("1.6-1.8", 1),
@@ -634,8 +656,10 @@ pub fn process_extracted_dir_only(
 }
 
 pub fn convert_resource_pack(file_path: &str, target_version: u32) -> Result<String, String> {
-    // 单包兼容入口不暴露 shaders 删除与物品定义 / CIT 开关：
-    // `delete_shaders = false`、两个转换项 = true、`delete_cit = false`（历史行为）。
+    // 单包兼容入口不暴露 shaders 删除与物品定义 / CIT / 元数据开关，一律走**默认值**：
+    // `delete_shaders = false`、`convert_item_definitions = true`、
+    // `convert_cit = false`（A1 止血之后的新默认）、`delete_cit = false`、
+    // `write_gen_metadata = true`（与 GUI 一致）。
     process_zip(
         file_path,
         target_version,
@@ -647,8 +671,9 @@ pub fn convert_resource_pack(file_path: &str, target_version: u32) -> Result<Str
         true,
         false,
         true,
-        true,
         false,
+        false,
+        true,
     )
 }
 
@@ -700,7 +725,7 @@ pub struct ConversionTiming {
 ///
 /// `delete_shaders` 见 [`process_zip_timed`] 的说明：**默认必须传 false**，
 /// 它是用户在转换页显式打开的"删掉 shaders"选项，不是默认行为。
-/// 末尾三个参数是物品定义 / CIT 的开关，见 [`process_zip_timed`] 的说明。
+/// 末尾参数是物品定义 / CIT 的开关与 2pyr-gen 元数据开关，见 [`process_zip_timed`] 的说明。
 #[allow(clippy::too_many_arguments)]
 pub fn process_zip(
     original_file_path: &str,
@@ -715,6 +740,7 @@ pub fn process_zip(
     convert_item_definitions: bool,
     convert_cit: bool,
     delete_cit: bool,
+    write_gen_metadata: bool,
 ) -> Result<String, String> {
     process_zip_timed(
         original_file_path,
@@ -731,6 +757,7 @@ pub fn process_zip(
         convert_item_definitions,
         convert_cit,
         delete_cit,
+        write_gen_metadata,
     )
     .map(|(path, _timing)| path)
 }
@@ -754,11 +781,23 @@ pub fn process_zip(
 ///   为什么不写成任务内部的早退：任务内部早退会留下"任务确实跑了、只是没做事"的
 ///   画像与日志，而这里的语义是**用户选择不跑**；过滤计划还能让 `plan_len` 与实际
 ///   执行数一致。
+/// * **默认值**：`convert_item_definitions` 与 `delete_cit` 由上层归一化（前者默认
+///   true、后者默认 false）；`convert_cit` 自 2026-10 起**默认 false**（A1 止血：
+///   CIT 附魔条件可能让 1.21.9+ 的物品定义整份失效，理由见
+///   [`crate::native_run::MixedRunOptions::convert_cit`]）。本函数不二次猜测默认值，
+///   三个 bool 一路透传，产物差异只由调用方决定。
 /// * `delete_cit` 是**删除**，与 `delete_shaders` 同一时机（全部任务之后、清理点之前）：
 ///   早删会让 `generate_cit_item_definitions` 看不到源文件（若它没被跳过），
 ///   晚删则赶不上 `Output::Dir` 的 harvest 与 Bedrock 边任务。
 /// * `delete_cit` **优先于** `convert_cit`：两者同开时 CIT 任务被过滤、目录被删除。
 ///   删除就是删除，先转一遍再删没有任何产物意义，只会在日志里留下误导性的 CIT 记录。
+///
+/// **`write_gen_metadata`**：是否在产物根目录写 `2pyr-gen.json`（本次转换的参数记录，
+/// 默认 true，见 [`crate::gen_metadata`]）。只在 **Java 目标**写——Bedrock 目标的产物
+/// 是 `.mcpack` 结构，而它在内部还要经过 Java 26.3 中间态（`target_version=97`），
+/// 因此"是不是 Bedrock 目标"必须用**对外目标格式**判断，且只能在这一层判断；判定
+/// 由 [`should_write_gen_metadata`] 单独负责并有单测。写入点在 `run_native` 的 tail
+/// （与 `pack.mcmeta` 改写同一处），因此 Zip / Dir 两种输出天然都覆盖。
 #[allow(clippy::too_many_arguments)]
 pub fn process_zip_timed(
     original_file_path: &str,
@@ -774,6 +813,7 @@ pub fn process_zip_timed(
     convert_item_definitions: bool,
     convert_cit: bool,
     delete_cit: bool,
+    write_gen_metadata: bool,
 ) -> Result<(String, ConversionTiming), String> {
     let input_zip = Path::new(original_file_path);
     if !input_zip.exists() {
@@ -977,6 +1017,42 @@ pub fn process_zip_timed(
         mopts.convert_item_definitions = convert_item_definitions;
         mopts.convert_cit = convert_cit;
         mopts.delete_cit = delete_cit;
+        // **2pyr-gen：构造在转换开始时，落盘在 `run_native` 的 tail。**
+        //
+        // 时间戳语义是"这次转换何时发起"（与产物落盘最多差一条管线的时长）。
+        // 只对 Java 目标构造；`None` 时驱动里那一行**一条语句都不执行**，
+        // 因此 overlay / foray / 单测等其它 `run_native` 调用方的产物完全不变。
+        mopts.gen_metadata = if should_write_gen_metadata(pack_format2, write_gen_metadata) {
+            // 标签用与日志/报告同一个映射；未知格式会得到 "Unknown"——那是占位符
+            // 不是版本，按契约省略该字段，绝不写 "unknown" 之类的假值。
+            let label = pack_format_label_for_output(pack_format2);
+            let target_label = (label != "Unknown").then(|| label.to_string());
+            Some(crate::gen_metadata::build(
+                source_version,
+                pack_format2,
+                target_label.as_deref(),
+                crate::gen_metadata::GenOptions {
+                    fix_alpha_layers,
+                    adapt_shaders,
+                    delete_shaders,
+                    convert_item_definitions,
+                    convert_cit,
+                    delete_cit,
+                },
+            ))
+        } else {
+            None
+        };
+        match (&mopts.gen_metadata, write_gen_metadata) {
+            (Some(meta), _) => log_info!(
+                "2pyr-gen: 将在产物根写入 2pyr-gen.json（source={} target={}，构建 {}）",
+                meta.source_pack_format,
+                meta.target_pack_format,
+                meta.generator_build
+            ),
+            (None, true) => log_info!("2pyr-gen: Bedrock 目标不写元数据文件"),
+            (None, false) => log_info!("2pyr-gen: 用户已关闭，不写元数据文件"),
+        }
         mopts.native = crate::native_run::NativeSwitches::all();
         // `tail`：把 `pack.mcmeta` 的 `pack_format` 改写到目标版本。
         // `run_native` 会在 workdir 上跑一次随后收获——与旧管线**同一套逻辑**，不重复实现。
@@ -1175,14 +1251,17 @@ mod tests {
         assert!(resolve_target_format("9.99").is_err());
     }
 
-    #[test]
-    fn timing_reports_pure_and_total() {
+    /// 造一个最小但合法（含可解码 PNG）的源包 zip，源格式 15。
+    ///
+    /// 共用给两条端到端用例：耗时口径（`timing_reports_pure_and_total`）与
+    /// 2pyr-gen 元数据（`gen_metadata_file_is_written_only_when_enabled`）。
+    ///
+    /// 注意 PNG 必须是**可解码**的：管线里的贴图任务会真的解它，坏 PNG 会让
+    /// "转换成功"这个前提不成立（而不是安静跳过）。
+    fn tiny_pack_zip(dir: &Path) -> PathBuf {
         use std::io::Write;
 
-        let dir = tempdir().expect("tempdir");
-        let zip_path = dir.path().join("tiny.zip");
-
-        // 造一个最小但合法（含可解码 PNG）的包
+        let zip_path = dir.join("tiny.zip");
         let png = {
             let img = image::RgbaImage::from_pixel(16, 16, image::Rgba([200, 40, 40, 255]));
             let mut buf = std::io::Cursor::new(Vec::new());
@@ -1191,23 +1270,28 @@ mod tests {
                 .expect("encode png");
             buf.into_inner()
         };
-        {
-            let file = std::fs::File::create(&zip_path).expect("create zip");
-            let mut zip = zip::ZipWriter::new(file);
-            let opts = zip::write::FileOptions::default();
-            zip.start_file("pack.mcmeta", opts).expect("start");
-            zip.write_all(br#"{"pack":{"pack_format":15,"description":"tiny"}}"#)
-                .expect("write");
-            zip.start_file("pack.png", opts).expect("start");
-            zip.write_all(&png).expect("write");
-            zip.start_file("assets/minecraft/textures/item/apple.png", opts)
-                .expect("start");
-            zip.write_all(&png).expect("write");
-            zip.start_file("assets/minecraft/textures/block/stone.png", opts)
-                .expect("start");
-            zip.write_all(&png).expect("write");
-            zip.finish().expect("finish");
-        }
+        let file = std::fs::File::create(&zip_path).expect("create zip");
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::FileOptions::default();
+        zip.start_file("pack.mcmeta", opts).expect("start");
+        zip.write_all(br#"{"pack":{"pack_format":15,"description":"tiny"}}"#)
+            .expect("write");
+        zip.start_file("pack.png", opts).expect("start");
+        zip.write_all(&png).expect("write");
+        zip.start_file("assets/minecraft/textures/item/apple.png", opts)
+            .expect("start");
+        zip.write_all(&png).expect("write");
+        zip.start_file("assets/minecraft/textures/block/stone.png", opts)
+            .expect("start");
+        zip.write_all(&png).expect("write");
+        zip.finish().expect("finish");
+        zip_path
+    }
+
+    #[test]
+    fn timing_reports_pure_and_total() {
+        let dir = tempdir().expect("tempdir");
+        let zip_path = tiny_pack_zip(dir.path());
 
         let out_dir = dir.path().join("out");
         fs::create_dir_all(&out_dir).expect("mkdir out");
@@ -1224,8 +1308,9 @@ mod tests {
             true,   // §9.138：测试保持「完整转换」语义（GUI 手术开）
             false,  // delete_shaders：本用例只关心耗时口径，保持默认关
             true,   // convert_item_definitions：默认开
-            true,   // convert_cit：默认开
+            false,  // convert_cit：A1 之后默认关（夹具没有 CIT 文件，取值不影响断言）
             false,  // delete_cit：默认关
+            true,   // write_gen_metadata：默认开（产物多一个 2pyr-gen.json，本用例不数条目）
         )
         .expect("conversion should succeed");
 
@@ -1278,6 +1363,174 @@ mod tests {
                 "pack.mcmeta 未写入目标版本 34：{mc}"
             );
         }
+    }
+
+    /// **`should_write_gen_metadata` 的判据**：Java 目标才写，Bedrock 目标（1000）不写。
+    ///
+    /// 判据必须是"对外目标格式"：Bedrock 内部会先转 Java 26.3（97），拿
+    /// `MixedRunOptions::target_version` 判断会把它误当成 Java 97（见函数注释）。
+    #[test]
+    fn gen_metadata_is_only_written_for_java_targets() {
+        assert!(should_write_gen_metadata(34, true));
+        assert!(should_write_gen_metadata(97, true));
+        assert!(!should_write_gen_metadata(1000, true), "Bedrock 目标不写元数据文件");
+        assert!(!should_write_gen_metadata(34, false), "用户关闭时不写");
+        assert!(!should_write_gen_metadata(1000, false));
+    }
+
+    /// **`2pyr-gen.json` 端到端契约**（生产入口 `process_zip_timed`）。
+    ///
+    /// 钉住四件事：
+    /// 1. **开**：产物 zip 根目录有 `2pyr-gen.json`，UTF-8、2 空格缩进、可被
+    ///    `serde_json` 解析；
+    /// 2. **字段与值**：generator / 版本 / BUILD / 源与目标格式 / 目标标签 /
+    ///    六个开关 / UTC RFC3339 秒级时间，全部符合与 Lead 对齐的契约；
+    /// 3. **不含个人信息**：文本里没有本机临时路径、没有用户名（这个文件会随包
+    ///    二次分发，任何本机信息都是泄漏）；
+    /// 4. **关**：产物里没有这个文件，且**除它之外的条目集合完全一致**——开关只
+    ///    控制这一个文件，不该改变任何其它产物。
+    #[test]
+    fn gen_metadata_file_is_written_only_when_enabled() {
+        use std::io::{Read as _, Write as _};
+
+        let dir = tempdir().expect("tempdir");
+        let zip_path = tiny_pack_zip(dir.path());
+        let src = zip_path.to_str().expect("path").to_string();
+
+        let convert = |tag: &str, write_gen_metadata: bool| -> PathBuf {
+            let out_dir = dir.path().join(format!("out_{tag}"));
+            fs::create_dir_all(&out_dir).expect("mkdir out");
+            let (path, _timing) = process_zip_timed(
+                &src,
+                34,
+                None,
+                1.0,
+                None,
+                Some(out_dir.to_str().expect("out path")),
+                false, // fix_alpha_layers
+                true,  // adapt_shaders
+                true,  // run_gui_surgeon
+                false, // delete_shaders
+                true,  // convert_item_definitions
+                false, // convert_cit：A1 之后默认关
+                false, // delete_cit
+                write_gen_metadata,
+            )
+            .expect("conversion should succeed");
+            PathBuf::from(path)
+        };
+        let read_entry = |p: &Path, name: &str| -> Option<Vec<u8>> {
+            let f = fs::File::open(p).expect("open zip");
+            let mut ar = zip::ZipArchive::new(f).expect("read zip");
+            let mut e = ar.by_name(name).ok()?;
+            let mut buf = Vec::new();
+            e.read_to_end(&mut buf).expect("read entry");
+            Some(buf)
+        };
+        let entry_names = |p: &Path| -> Vec<String> {
+            let f = fs::File::open(p).expect("open zip");
+            let mut ar = zip::ZipArchive::new(f).expect("read zip");
+            let mut names: Vec<String> = (0..ar.len())
+                .filter_map(|i| ar.by_index(i).ok().map(|e| e.name().to_string()))
+                .collect();
+            names.sort();
+            names
+        };
+
+        // ── 开：文件存在、格式与字段符合契约 ─────────────────────────────
+        let on_zip = convert("on", true);
+        let raw = read_entry(&on_zip, "2pyr-gen.json")
+            .expect("开启时产物根必须含 2pyr-gen.json");
+        let text = String::from_utf8(raw).expect("2pyr-gen.json 必须是 UTF-8");
+        // 契约：给人读的 JSON，缩进 2（`serde_json::to_vec_pretty` 的默认缩进）
+        assert!(
+            text.contains("\n  \"generator\""),
+            "必须是 2 空格缩进的 JSON：{text}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&text).expect("2pyr-gen.json 必须可解析");
+
+        // 顶层字段集合必须**恰好**是契约里那几个（多一个都可能是泄漏面）
+        let mut keys: Vec<&str> = v
+            .as_object()
+            .expect("顶层必须是对象")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "generated_at",
+                "generator",
+                "generator_build",
+                "generator_version",
+                "notice",
+                "options",
+                "source_pack_format",
+                "target_label",
+                "target_pack_format",
+            ],
+            "字段集合与契约不一致：{keys:?}"
+        );
+        assert_eq!(v["generator"], "2-Pyramid");
+        assert_eq!(v["generator_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["generator_build"], env!("BUILD_NUMBER"));
+        assert_eq!(v["source_pack_format"], 15, "源格式必须来自读到的 pack.mcmeta");
+        assert_eq!(v["target_pack_format"], 34);
+        assert_eq!(v["target_label"], "Java 1.21-1.21.1");
+        assert!(
+            v["notice"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+            "notice 必须是非空说明行：{:?}",
+            v["notice"]
+        );
+        let opts = &v["options"];
+        assert_eq!(opts["fix_alpha_layers"], false);
+        assert_eq!(opts["adapt_shaders"], true);
+        assert_eq!(opts["delete_shaders"], false);
+        assert_eq!(opts["convert_item_definitions"], true);
+        assert_eq!(opts["convert_cit"], false);
+        assert_eq!(opts["delete_cit"], false);
+
+        // 时间：UTC、RFC3339、秒级
+        let ts = v["generated_at"].as_str().expect("generated_at 必须是字符串");
+        let parsed =
+            chrono::DateTime::parse_from_rfc3339(ts).expect("generated_at 必须是 RFC3339");
+        assert_eq!(parsed.offset().local_minus_utc(), 0, "必须是 UTC：{ts}");
+        assert_eq!(parsed.timestamp_subsec_nanos(), 0, "必须是秒级：{ts}");
+
+        // 无个人信息：不含本机临时路径 / Windows 用户名
+        assert!(
+            !text.contains(dir.path().to_str().expect("utf8")),
+            "产物里不得出现本机路径：{text}"
+        );
+        if let Ok(user) = std::env::var("USERNAME") {
+            if !user.is_empty() {
+                assert!(!text.contains(&user), "产物里不得出现用户名：{text}");
+            }
+        }
+
+        // ── 关：没有这个文件，其余条目集合完全一致 ─────────────────────
+        let off_zip = convert("off", false);
+        assert!(
+            read_entry(&off_zip, "2pyr-gen.json").is_none(),
+            "关闭后产物里不得有 2pyr-gen.json"
+        );
+        let on_names = entry_names(&on_zip);
+        let off_names = entry_names(&off_zip);
+        assert_eq!(
+            on_names.len(),
+            off_names.len() + 1,
+            "开启只应多一个文件：on={on_names:?} off={off_names:?}"
+        );
+        let on_rest: Vec<&String> = on_names
+            .iter()
+            .filter(|n| n.as_str() != "2pyr-gen.json")
+            .collect();
+        assert_eq!(
+            on_rest,
+            off_names.iter().collect::<Vec<_>>(),
+            "除 2pyr-gen.json 外条目集合必须完全一致"
+        );
     }
 
     /// End-to-end smoke test: copy the Pika 5K 16x resource pack's container
