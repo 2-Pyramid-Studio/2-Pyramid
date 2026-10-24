@@ -1,7 +1,10 @@
 <!-- markdownlint-disable MD033 MD036 -->
 
 <p align="center">
-  <img src="./src/assets/logo-256.png" width="160" alt="2-Pyramid logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./src/assets/logo-256-white.png">
+    <img src="./src/assets/logo-256.png" width="160" alt="2-Pyramid logo">
+  </picture>
 </p>
 
 <h1 align="center">2-Pyramid</h1>
@@ -226,9 +229,12 @@ npm run 2pyr       # Tauri dev 模式（Rust 后端 + Vite 前端）
 │   ├── overlay/               Overlay 模板（模型 / shader / lang）
 │   └── tauri.conf.json
 ├── installer-app/             自研安装器项目（内嵌 payload.zip，HKCU 注册表）
+├── brand/                     品牌源 SVG（Precision Geometry）+ 提案原文 + 评审记录
 ├── tools/                     构建与发布工具（见下）
 │   ├── build_release.py       发布流水线（版本校验 / 安装器 / MSIX / .sha256）
 │   ├── set_version.py         版本号 10 处统一设置与 --check 守门
+│   ├── generate-logos.mjs     品牌 PNG 生成（brand/ SVG → src/assets + public/）
+│   ├── generate-icons.mjs     OS 图标生成（ICO / MSIX / 安装器图标）
 │   ├── convert-report.bat/.ps1 拖放即转换的启动器与逻辑
 │   ├── benchmark/             性能基准页（单文件 HTML，零依赖）
 │   ├── release/  store/       发布清单 / 商店提交文案
@@ -471,9 +477,12 @@ The binary has three headless modes; all are **read-only or self-contained** and
 │   ├── overlay/               Overlay templates
 │   └── tauri.conf.json
 ├── installer-app/             Self-owned installer (embeds payload.zip)
+├── brand/                     Brand source SVGs (Precision Geometry), proposal PDF, review notes
 ├── tools/                     Build & release tooling (see below)
 │   ├── build_release.py       Release pipeline (version check / installer / MSIX / .sha256)
 │   ├── set_version.py         Sets all 10 version sites; `--check` gate
+│   ├── generate-logos.mjs     Brand PNG generation (brand/ SVG → src/assets + public/)
+│   ├── generate-icons.mjs     OS icon generation (ICO / MSIX / installer icons)
 │   ├── convert-report.bat/.ps1 Drag-and-drop convert launcher and its logic
 │   ├── benchmark/             Perf baseline page (single-file HTML, zero deps)
 │   ├── release/  store/       Release checklist / Store listing copy

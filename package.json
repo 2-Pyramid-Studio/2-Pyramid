@@ -10,6 +10,8 @@
     "tauri": "tauri",
     "2-pyramid": "tauri dev",
     "2pyr": "tauri dev",
+    "logos": "node tools/generate-logos.mjs",
+    "icons": "node tools/generate-icons.mjs",
     "test": "cargo test --lib --manifest-path src-tauri/Cargo.toml",
     "test:offline": "cargo test --offline --lib --manifest-path src-tauri/Cargo.toml",
     "buildproject": "tauri build",
