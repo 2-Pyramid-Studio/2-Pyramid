@@ -79,6 +79,24 @@ pub mod drop_glint;
 #[path = "eraser/drop_blockstates.rs"]
 pub mod drop_blockstates;
 
+/// **S2-B：旧原版模型 / blockstate 指纹停用**（`drop_unmodified_legacy_models`）。
+///
+/// 1.9–1.12（format 2/3）老包常把整套原版 `models/**`、`blockstates/**` JSON 原样打包；
+/// 升到 1.13+（format ≥4）后这些"没改过的旧原版 JSON"会覆盖目标版本自己的定义 →
+/// 紫黑方块 / 错误几何 / 手持大小异常。本任务按数据表 `legacy-defaults.json` 的
+/// "规范化 JSON sha256" 指纹识别并**停用（删除）未修改的旧原版**，作者改过的保留。
+///
+/// **实现与数据契约都写在模块自己的文件头**（canonicalization 规则必须与 Python
+/// 生成器逐字一致，跨语言一致性由 `.fixtures.json` 证明）。数据表与夹具由数据队友拥有，
+/// 本模块只 `include_str!` 读取。
+///
+/// **计划位置**：不由 `conversion_maps` 决定，由
+/// `native_run::inject_legacy_models_task` 在 `Scheduler::plan` 之后注入（条件：
+/// 源 format ∈ {2,3}、目标 format ≥4 且 ≠1000），插在 Eraser 段最前。任务本身对
+/// `target<4 || target==1000` 还有二次 no-op 防御。
+#[path = "eraser/legacy_defaults.rs"]
+pub mod legacy_defaults;
+
 #[path = "native/rename_blocks_tables.rs"]
 mod rename_blocks_tables;
 

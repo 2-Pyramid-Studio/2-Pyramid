@@ -660,6 +660,10 @@ where
     // 三个条件见 [`inject_hygiene_tasks`] 的文档；它们不来自 `conversion_maps`。
     inject_hygiene_tasks(&mut plan, opts);
 
+    // **S2-B：旧原版模型/blockstate 指纹停用 → 条件注入**（见 [`inject_legacy_models_task`]）。
+    // 放在纹理卫生之后、同一个注入点：注入任务同样进入 `native_placements`/report 口径。
+    inject_legacy_models_task(&mut plan, opts);
+
     // §9.93（M3）：包名与旧管线**同源**——`invoke_conversion_ex` 也是取
     // `target_path.file_stem()`（`target_path` 即输入包）。这样 Bedrock 任务在两条路径上
     // 看到同一个包名，产出的 `.mcpack` 文件名一致。
@@ -1368,6 +1372,51 @@ fn inject_hygiene_tasks(plan: &mut Vec<String>, opts: &MixedRunOptions) {
     }
 }
 
+/// **S2-B：旧原版模型/blockstate 指纹停用任务 → 计划注入**
+/// （`drop_unmodified_legacy_models`，实现见 `natives::legacy_defaults`）。
+///
+/// ## 触发条件（版本矩阵）
+///
+/// ```text
+/// source_version ∈ {2, 3}   // 1.9–1.12：这批包最可能把整套旧原版 JSON 打进包里
+/// target_version >= 4       // 1.13+：旧原版 JSON 的语义已被重定义，留着会覆盖新版定义
+/// target_version != 1000    // Bedrock 不是本任务语义（.mcpack 不用 Java 模型系统）
+/// ```
+///
+/// 四个条件同时满足才注入；其余组合（1→34、2→2、4→34、2→bedrock、默认 34→55…）计划
+/// 与改动前**完全一致**，默认产物因此不变。
+///
+/// **注意（生产 Bedrock 目标的已知边界）**：`version_converter` 为 Bedrock 目标把
+/// `MixedRunOptions::target_version` 设成 **Java 中间态 97**（再跑 j2b），所以
+/// `!= 1000` 这条在**生产 Bedrock 转换里不会生效**——`2/3 → bedrock` 实际会按 97 注入。
+/// 让 j2b 消费不到 Java models/blockstates 是 Bedrock 边任务自身的事（它读贴图/清单）；
+/// 这里保持数据契约要求的条件语义，边界写进报告。直接以 `target_version=1000` 调
+/// `run_native` 的调用方（测试/未来驱动）则不会注入。
+///
+/// ## 位置与顺序
+///
+/// 用与纹理卫生相同的 [`insert_task_by_tier`] 插到 **Eraser 段最前**（不移动任何原有任务）。
+/// 它与 A1 `fix_mislabeled_textures` 同为 Eraser 级；本函数在 `inject_hygiene_tasks`
+/// **之后**调用 ⇒ 头插后它排在 A1 **之前**：先停用"会覆盖新版语义的旧原版 JSON"，
+/// 再修贴图字节。两者读写对象不相交（models/blockstates vs textures），顺序无依赖，
+/// 这样排只是让"删掉覆盖定义"尽量早发生。
+fn inject_legacy_models_task(plan: &mut Vec<String>, opts: &MixedRunOptions) {
+    let source = opts.source_version;
+    let target = opts.target_version;
+    if source < 2 || source > 3 || target < 4 || target == 1000 {
+        return;
+    }
+    insert_task_by_tier(plan, crate::natives::legacy_defaults::TASK_NAME, Tier::Eraser);
+    // 计划被改过就必须能在日志里解释（与 `conversion switches` 那行同一个目的）：
+    // 用户看到产物少了 models/blockstates，要能对上"这是老包升新版的有意停用"。
+    crate::log_info!(
+        "plan: 注入 {}（source={} → target={}：停用未修改的旧原版模型/blockstate JSON）",
+        crate::natives::legacy_defaults::TASK_NAME,
+        source,
+        target
+    );
+}
+
 /// 把注入任务插到**第一个 tier 不低于它的原计划任务之前**，随后保持原计划任务的
 /// 相对顺序不变。
 ///
@@ -1665,6 +1714,13 @@ fn native_for(
             crate::natives::chest::decl(),
             crate::natives::chest::run,
         ));
+    }
+    // **S2-B：旧原版模型/blockstate 指纹停用**。任务名不来自 `conversion_maps`，由
+    // `inject_legacy_models_task` 注入；因为 models/blockstates **不属于** `NativeSwitches`
+    // 的任何模块分组（它只有 textures/ui/reverse 三组，且本任务没有旧闭包实现），
+    // 所以派发放在模块开关之外、**无条件可用**——注入条件本身已经收窄到 2/3→4+。
+    if let Some((decl, run)) = crate::natives::legacy_defaults::lookup(name) {
+        return Some(("legacy_defaults", decl, run));
     }
     if switches.textures {
         // **纹理卫生三任务**（A1/A2/A7）：任务名不来自 `conversion_maps`，
@@ -2845,6 +2901,94 @@ mod tests {
             base.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             "textures 模块关闭时不该注入任何纹理卫生任务"
         );
+    }
+
+    /// **S2-B：旧原版模型/blockstate 指纹停用任务的注入矩阵与位置**（纯函数，不跑管线）。
+    ///
+    /// 条件：`source ∈ {2,3} && target ≥ 4 && target != 1000`；位置：Eraser 段最前
+    /// （在 A1 之后头插 ⇒ 排到 A1 之前；两者读写对象不相交）。矩阵之外的组合计划必须
+    /// 与改动前完全一致——这是"默认产物不变"在本任务上的闸门。
+    #[test]
+    fn legacy_models_injection_matrix_and_order_are_pinned() {
+        let task = "drop_unmodified_legacy_models";
+        let base = ["rename_blocks_items", "generate_boat", "fix_clock_compass"];
+        let plan_for = |source: u32, target: u32| -> Vec<String> {
+            let opts = MixedRunOptions {
+                source_version: source,
+                target_version: target,
+                native: NativeSwitches::all(),
+                ..MixedRunOptions::default()
+            };
+            let mut plan: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+            inject_hygiene_tasks(&mut plan, &opts);
+            inject_legacy_models_task(&mut plan, &opts);
+            plan
+        };
+
+        // 命中矩阵：2→4 / 2→34 / 3→34 / 3→46 都注入，恰好一次，且是计划第一个。
+        for (source, target) in [(2u32, 4u32), (2, 34), (3, 34), (3, 46)] {
+            let plan = plan_for(source, target);
+            assert_eq!(
+                plan.first().map(String::as_str),
+                Some(task),
+                "{source}→{target} 必须注入且位于计划最前：{plan:?}"
+            );
+            assert_eq!(
+                plan.iter().filter(|n| *n == task).count(),
+                1,
+                "{source}→{target} 不能重复注入：{plan:?}"
+            );
+            // A1 原本是 Eraser 段第一；本任务后插入（头插）⇒ 排在 A1 之前。
+            assert_eq!(
+                plan.get(1).map(String::as_str),
+                Some("fix_mislabeled_textures"),
+                "{source}→{target} 下 A1 应紧随其后：{plan:?}"
+            );
+        }
+
+        // 相对"只有纹理卫生"的计划，正好 +1 个任务（不是偷偷替换掉别人）。
+        {
+            let opts = MixedRunOptions {
+                source_version: 3,
+                target_version: 34,
+                native: NativeSwitches::all(),
+                ..MixedRunOptions::default()
+            };
+            let mut only_hygiene: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+            inject_hygiene_tasks(&mut only_hygiene, &opts);
+            assert_eq!(
+                plan_for(3, 34).len(),
+                only_hygiene.len() + 1,
+                "命中矩阵下只应多出这一个任务"
+            );
+        }
+
+        // 不注入矩阵：源不是 2/3、目标是旧版、目标是 Bedrock、现代源、默认 34→55。
+        for (source, target) in [
+            (1u32, 34u32),
+            (2, 2),
+            (2, 3),
+            (3, 3),
+            (4, 34),
+            (2, 1000),
+            (34, 55),
+        ] {
+            let plan = plan_for(source, target);
+            assert!(
+                !plan.iter().any(|n| n == task),
+                "{source}→{target} 不该注入 {task}：{plan:?}"
+            );
+        }
+
+        // `MixedRunOptions::default`（34→34）同样不注入（默认产物/plan_len 不变）。
+        let default_opts = MixedRunOptions {
+            native: NativeSwitches::all(),
+            ..MixedRunOptions::default()
+        };
+        let mut plan: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+        inject_hygiene_tasks(&mut plan, &default_opts);
+        inject_legacy_models_task(&mut plan, &default_opts);
+        assert!(!plan.iter().any(|n| n == task), "默认 opts 不该注入：{plan:?}");
     }
 
     /// **A1 始终注入、最先执行，且不改变正常 PNG 的字节。**

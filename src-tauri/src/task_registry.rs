@@ -23,8 +23,8 @@ pub struct TaskMeta {
     pub tier: Tier,
 }
 
-/// 93 个任务的元数据，**顺序与旧注册表逐字一致**（勿排序、勿插入；本版的
-/// 三个新任务追加在表尾，见文件末尾注释）。
+/// 94 个任务的元数据，**顺序与旧注册表逐字一致**（勿排序、勿插入；本版的
+/// 四个新任务追加在表尾，见文件末尾注释）。
 pub const REGISTRY: &[TaskMeta] = &[
     TaskMeta { name: "rename_blocks_items", task_type: TaskType::Exclusive, tier: Tier::Eraser },
     TaskMeta { name: "convert_animated_textures", task_type: TaskType::Exclusive, tier: Tier::Eraser },
@@ -156,6 +156,12 @@ pub const REGISTRY: &[TaskMeta] = &[
     // A7 从 `AUXILIARY` 移到本表：以前它只是"阶段查询兜底"的一行元数据，没有任何实现；
     // 现在有了原生实现与注入点，就和其他任务一样以本表为唯一事实来源。
     TaskMeta { name: "fix_alpha_layers_in_textures", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
+    // **旧原版模型/blockstate 指纹停用**（`natives/eraser/legacy_defaults.rs`）。
+    // 同样不进旧注册表：任务按数据表指纹识别"未修改的旧原版 JSON"，由
+    // `native_run::inject_legacy_models_task` 在源 format 2/3 → 目标 ≥4 时注入。
+    // 仍然必须登记在这里：`native_for` 的派发与 `native_placements` 的放置侧都要阶段；
+    // 它是 Eraser 级（与其它"删除包内覆盖物"的任务同阶段），Exclusive（独占扫描并删）。
+    TaskMeta { name: "drop_unmodified_legacy_models", task_type: TaskType::Exclusive, tier: Tier::Eraser },
 ];
 
 /// **不在** [`REGISTRY`] 里、但会出现在计划中的任务的阶段。
@@ -194,7 +200,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// **表形状守卫**（§9.125）：93 项、无重名，且三个阶段/三种并发类型都有实例。
+    /// **表形状守卫**（§9.125）：94 项、无重名，且三个阶段/三种并发类型都有实例。
     ///
     /// 为什么钉住这个数：这张表是「驱动取阶段的数据源」，**少一项就会让某个原生任务
     /// 在 `native_placements` 里查不到阶段**，从而静默换到另一侧 ⇒ 产物分叉（§9.124 的风险）。
@@ -220,11 +226,21 @@ mod tests {
     /// * `fix_item_transparency`（Surgeon / Exclusive）—— 旧包假透明背景清理；
     /// * `fix_alpha_layers_in_textures`（Surgeon / Exclusive）—— 历史「图层修复」原生化，
     ///   从 [`AUXILIARY`] 转正。
+    ///
+    /// **93 → 94 的理由（2026-11，旧原版模型指纹停用）**：新增一个任务
+    /// （表尾）：`drop_unmodified_legacy_models`（Eraser / Exclusive）——源 format 2/3
+    /// 升目标 ≥4 时，按数据表指纹停用"未修改的旧原版" `models/**`、`blockstates/**` JSON，
+    /// 避免它们覆盖新版定义（紫黑方块/错误几何/手持大小异常）。它不进旧注册表，
+    /// 由 `native_run::inject_legacy_models_task` 注入；进本表是为了派发与放置侧取阶段。
     #[test]
     fn registry_shape_is_pinned() {
-        assert_eq!(REGISTRY.len(), 93, "元数据表项数必须与旧注册表 + 纹理卫生三任务追加一致");
+        assert_eq!(
+            REGISTRY.len(),
+            94,
+            "元数据表项数必须与旧注册表 + 纹理卫生三任务 + 旧原版模型停用一致"
+        );
         let names: BTreeSet<&str> = REGISTRY.iter().map(|m| m.name).collect();
-        assert_eq!(names.len(), 93, "出现重名：表里每个任务名必须唯一");
+        assert_eq!(names.len(), 94, "出现重名：表里每个任务名必须唯一");
 
         // 三种阶段都必须有实例，否则「阶段」这个维度事实上没被覆盖
         for tier in [Tier::Eraser, Tier::Architect, Tier::Surgeon] {
