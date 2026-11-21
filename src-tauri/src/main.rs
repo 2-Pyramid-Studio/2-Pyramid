@@ -149,6 +149,15 @@ fn main() {
         std::process::exit(run_pack_diff_cli(&args, idx));
     }
 
+    // 目标版本清单（脚本/用户查可用 --to 取值）：只读，不启动 GUI。
+    // 放在 `--convert` 之前：`--versions` 经常和 `--convert` 一起被脚本探测，
+    // 但两者语义互斥，`--versions` 优先。
+    if args.iter().any(|a| a == "--versions") {
+        let code = cli::run_versions();
+        two_pyramid_lib::flush_logs();
+        std::process::exit(code);
+    }
+
     // 无界面转换（拖放脚本用）：跑完整管线并输出 JSON 报告
     if let Some(idx) = args.iter().position(|a| a == "--convert") {
         let code = cli::run_convert(&args, idx);

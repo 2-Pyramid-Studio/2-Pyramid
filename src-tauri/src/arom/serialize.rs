@@ -5,8 +5,12 @@
 //! * 压缩方法 = 扩展名白名单（与 `converters/zip.rs:568–581` 一致，**改动必须同步**）；
 //! * 时间戳 / unix 权限位 = **不写**（`FileOptions::default()` 的默认值），与现状一致；
 //! * 目录条目 = 显式目录 ∪ 文件隐含的祖先目录（现状解压在磁盘上会建出它们）；
+//! * **压缩级别 = Deflated 条目取最高级 9**（`FileOptions::compression_level(Some(9))`）；
+//!   `Stored` 条目**不能**带级别（zip 0.6 的 `switch_to` 对 Stored + level 报
+//!   `Unsupported compression level`），因此只有 Deflated 分支设置。
+//!   产物**内容**不变，只是压缩字节变小——这是有意的体积优化（Deflated 条目统一使用级别 9）；
 //! * **透传策略（D23）**：只有「源方法 == 白名单方法 == `Stored`」时才 `copy_raw_to` 零解压透传；
-//!   其余一律解压后按现状设置重压——`Deflated` 条目原样透传会改变产物字节；
+//!   其余一律解压后按白名单方法重压——`Deflated` 条目原样透传会改变产物字节；
 //! * 未写入的条目天然透传（不在任何层里出现就是未触碰）。
 
 use std::collections::BTreeSet;
@@ -53,6 +57,26 @@ pub struct SerializeStats {
     /// 层写入（blob/alias）直写的条目数。
     pub written: usize,
     pub bytes: u64,
+}
+
+/// Deflated 条目的压缩级别：zlib/flate2 允许的最高级（0–9 里的 9）。
+///
+/// 为什么钉常量：这一条是**本模块**的产物字节改动（产物内容不变、压缩字节变小），
+/// 必须能被单测直接引用，也必须在报告里可复述。
+pub const DEFLATE_LEVEL: i32 = 9;
+
+/// 某个条目最终使用的 `FileOptions`（压缩方法 + （仅 Deflated）最高压缩级别）。
+///
+/// `Stored` **不设** `compression_level`：zip 0.6.6 的 `switch_to` 对
+/// `Stored` + `Some(level)` 直接返回 `UnsupportedArchive("Unsupported compression level")`，
+/// 而 store 语义本来就是"不压"，设级别只会炸。
+fn file_options_for(method: zip::CompressionMethod) -> zip::write::FileOptions {
+    let options = zip::write::FileOptions::default().compression_method(method);
+    if method == zip::CompressionMethod::Deflated {
+        options.compression_level(Some(DEFLATE_LEVEL))
+    } else {
+        options
+    }
 }
 
 /// 现状压缩方法白名单。与 `converters/zip.rs:568–581` 必须保持一致。
@@ -119,7 +143,7 @@ pub fn write_zip(
 
     for res in &files {
         let target = method_for_path(&res.path);
-        let options = zip::write::FileOptions::default().compression_method(target);
+        let options = file_options_for(target);
         zip.start_file(res.path.as_str(), options)
             .map_err(|e| AromError::zip(format!("start_file {}: {e}", res.path)))?;
 
@@ -201,8 +225,29 @@ fn sibling_tmp(out: &Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use crate::arom::source::MemSource;
-    use crate::pack::diff::diff_containers;
+    use crate::pack::diff::{diff_containers, ContainerDiffKind};
+    use std::collections::BTreeMap;
+    use std::fs;
     use std::io::Write;
+
+    /// 读 zip 里每个条目的 `(压缩方法名, 压缩字节数)`，供"级别 9 只让 Deflated 变小、
+    /// Stored 逐字节不变"的断言使用。
+    fn compressed_entries(path: &Path) -> BTreeMap<String, (String, u64)> {
+        let f = std::fs::File::open(path).expect("open zip");
+        let mut ar = zip::ZipArchive::new(f).expect("read zip");
+        let mut map = BTreeMap::new();
+        for i in 0..ar.len() {
+            let e = ar.by_index(i).expect("entry");
+            let method = match e.compression() {
+                zip::CompressionMethod::Stored => "stored",
+                zip::CompressionMethod::Deflated => "deflated",
+                _ => "other",
+            }
+            .to_string();
+            map.insert(e.name().to_string(), (method, e.compressed_size()));
+        }
+        map
+    }
 
     struct Spec {
         name: String,
@@ -315,7 +360,11 @@ mod tests {
         let new_out = tmp.path().join("new.zip");
         let stats = write_zip(&pack, &view, &new_out, &SerializeOptions::default()).expect("write");
 
-        // 对照
+        // 对照：**内容与条目集合必须一致**。
+        //
+        // 压缩字节的差异是**有意行为**：Deflated 条目从默认级别（zlib 6）
+        // 改为最高级 9（[`DEFLATE_LEVEL`]），`COMPRESSED-BYTES-DIFF` 因此是预期内的，
+        // 且只允许**变小**；压缩方法 / 权限不得变化；时间戳仍只报告（见 diff.rs 的说明）。
         let report = diff_containers(&old_out, &new_out).expect("diff");
         assert_eq!(report.blocking, 0, "内容级不得有差异：{:?}", report.diffs);
         assert_eq!(
@@ -323,16 +372,47 @@ mod tests {
             "目录条目集合必须一致（空目录 + 隐含祖先目录）：{:?}",
             report.container
         );
-        assert_eq!(
-            report.container_byte_only, 0,
-            "压缩方法/时间戳/权限必须与旧管线一致：{:?}",
-            report.container
-        );
+        let unexpected: Vec<_> = report
+            .container
+            .as_ref()
+            .expect("两侧都是 zip，容器级比对必须执行")
+            .diffs
+            .iter()
+            .filter(|d| {
+                !matches!(
+                    d.kind,
+                    ContainerDiffKind::CompressedBytesDiff
+                        | ContainerDiffKind::MtimeDiff
+                        | ContainerDiffKind::OrderOnly
+                )
+            })
+            .collect();
         assert!(
-            report.passed(true),
-            "严格模式必须通过（条目顺序差异是信息项）：{:?}",
-            report.container
+            unexpected.is_empty(),
+            "只允许压缩字节/时间戳/顺序差异，实际还有：{unexpected:?}"
         );
+
+        // 逐条目：方法必须一致；Stored 压缩字节不变；Deflated 新压缩字节不得变大
+        // （level 9 应 ≤ 旧管线的 default level）。
+        let old_entries = compressed_entries(&old_out);
+        let new_entries = compressed_entries(&new_out);
+        for (name, (new_method, new_size)) in &new_entries {
+            let (old_method, old_size) = old_entries
+                .get(name)
+                .unwrap_or_else(|| panic!("旧管线缺少条目 {name}"));
+            assert_eq!(new_method, old_method, "{name} 的压缩方法被改变");
+            if new_method == "deflated" {
+                assert!(
+                    new_size <= old_size,
+                    "{name}：level 9 的压缩字节（{new_size}）不得大于旧管线（{old_size}）"
+                );
+            } else {
+                assert_eq!(
+                    new_size, old_size,
+                    "{name}：Stored/透传条目的压缩字节必须逐字节不变"
+                );
+            }
+        }
 
         // 透传策略确实被执行：Stored 的 png/bin 走透传，其余重压
         assert!(stats.passthrough >= 2, "stored 条目应零解压透传：{stats:?}");
@@ -540,13 +620,126 @@ mod tests {
             "条目集合差异：{:?}",
             report.container
         );
-        assert_eq!(
-            report.container_byte_only, 0,
-            "容器字节属性差异：{:?}",
-            report.container
+        // 自本版起 Deflated 用级别 9：与旧管线（default level）相比只允许压缩字节变小，
+        // 方法/权限不变。`container_byte_only != 0` 因此是**预期**，不再判失败。
+        let unexpected: Vec<_> = report
+            .container
+            .as_ref()
+            .expect("两侧都是 zip，容器级比对必须执行")
+            .diffs
+            .iter()
+            .filter(|d| {
+                !matches!(
+                    d.kind,
+                    ContainerDiffKind::CompressedBytesDiff
+                        | ContainerDiffKind::MtimeDiff
+                        | ContainerDiffKind::OrderOnly
+                )
+            })
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "只允许压缩字节/时间戳/顺序差异，实际还有：{unexpected:?}"
         );
-        assert!(report.passed(true), "严格模式必须通过");
+        let old_entries = compressed_entries(&old_out);
+        for (name, (new_method, new_size)) in compressed_entries(&new_out) {
+            let (old_method, old_size) = old_entries
+                .get(&name)
+                .unwrap_or_else(|| panic!("旧管线缺少条目 {name}"));
+            assert_eq!(&new_method, old_method, "{name} 的压缩方法被改变");
+            if new_method == "deflated" {
+                assert!(
+                    new_size <= *old_size,
+                    "{name}：level 9 的压缩字节（{new_size}）不得大于旧管线（{old_size}）"
+                );
+            }
+        }
     }
+
+    /// **压缩级别契约**：Deflated 条目用最高级 9，产物内容可解、Stored 不受影响。
+    ///
+    /// 断言方式：
+    /// 1. 与"默认级别（`FileOptions::default()` → zlib 6）"的同一份内容对照，
+    ///    级别 9 的压缩字节 **≤** 默认级别（通常严格更小，见打印）；**不允许更大**；
+    /// 2. 解包回读内容逐字节相同（级别只影响压缩字节，不影响内容）；
+    /// 3. Stored 条目仍是 Stored、压缩字节 == 原始长度（"已压过不重压"语义不变）。
+    #[test]
+    fn deflated_entries_use_max_compression_level() {
+        // 可压缩语料：确定性 LCG 生成的英文风格文本（重复结构足够让 6 与 9 产生差异）。
+        let words = [
+            "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "resource", "pack",
+            "conversion", "texture", "model", "block", "item", "animation", "metadata", "sprite",
+        ];
+        let mut corpus = String::with_capacity(200_000);
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        for _ in 0..40_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let idx = ((state >> 33) as usize) % words.len();
+            corpus.push_str(words[idx]);
+            corpus.push(' ');
+            if state % 13 == 0 {
+                corpus.push('\n');
+            }
+        }
+        let body = corpus.into_bytes();
+
+        let src = MemSource::new(vec![
+            ("a.txt".to_string(), body.clone()),
+            ("x.png".to_string(), vec![9u8; 4096]),
+        ])
+        .expect("mem");
+        let pack = Pack::from_source(Box::new(src), None).expect("pack");
+        let view = pack.view();
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let level9 = tmp.path().join("level9.zip");
+        write_zip(&pack, &view, &level9, &SerializeOptions::default()).expect("write level9");
+
+        // 参照：同一个 body 用默认级别（None）压一次
+        let default_ref = tmp.path().join("default.zip");
+        {
+            let f = File::create(&default_ref).expect("create");
+            let mut zip = zip::ZipWriter::new(f);
+            zip.start_file(
+                "a.txt",
+                zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .expect("start");
+            zip.write_all(&body).expect("write");
+            zip.finish().expect("finish");
+        }
+
+        let e9 = compressed_entries(&level9);
+        let e6 = compressed_entries(&default_ref);
+        let (m9, s9) = e9.get("a.txt").expect("a.txt in level9");
+        let (_, s6) = e6.get("a.txt").expect("a.txt in default");
+        println!(
+            "compress test: a.txt len={} level9={} default={} (DEFLATE_LEVEL={})",
+            body.len(),
+            s9,
+            s6,
+            DEFLATE_LEVEL
+        );
+        assert_eq!(m9, "deflated");
+        assert_eq!(DEFLATE_LEVEL, 9);
+        assert!(
+            s9 <= s6,
+            "级别 9 的压缩字节（{s9}）不得大于默认级别（{s6}）"
+        );
+
+        // 回读内容不变 + Stored 语义不变
+        let f = fs::File::open(&level9).expect("open");
+        let mut ar = zip::ZipArchive::new(f).expect("zip");
+        let mut read_back = Vec::new();
+        std::io::Read::read_to_end(&mut ar.by_name("a.txt").expect("by_name"), &mut read_back)
+            .expect("read");
+        assert_eq!(read_back, body, "压缩级别不得改变内容");
+        let (png_method, png_size) = e9.get("x.png").expect("x.png");
+        assert_eq!(png_method, "stored", "png 白名单必须仍是 Stored");
+        assert_eq!(*png_size, 4096, "Stored 条目的压缩字节必须等于原始长度");
+    }
+
 
     #[test]
     fn mem_source_serializes_without_a_container() {

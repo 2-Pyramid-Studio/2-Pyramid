@@ -1,10 +1,17 @@
-//! 无界面转换 CLI：`2-pyramid.exe --convert <路径> [--to <版本>] [--out <目录>] [--report <file.json>] [--delete-shaders] [--no-item-definitions] [--cit] [--delete-cit] [--no-gen-metadata]`
+//! 无界面转换 CLI：
+//! `2-pyramid.exe --convert <路径> [--to <版本>] [--out <目录>] [--report <file.json>] [--folder] [--delete-shaders] [--no-item-definitions] [--cit] [--delete-cit] [--no-gen-metadata]`
+//!
+//! 另有 `2-pyramid.exe --versions`（列出全部目标标签 + pack_format，供脚本枚举）。
 //!
 //! 供拖放脚本使用：把资源包（或含资源包的文件夹）拖到脚本上 → 跑完整转换 →
 //! 输出**结构化 JSON 报告**（结构分析 + 两个耗时口径 + 逐任务画像 + 体积变化）。
 //!
 //! 与 GUI 完全同一条管线（`process_zip_timed`），因此报告里的数字可直接用于
 //! 性能优化前后的对比。
+//!
+//! `--folder`：产物为**文件夹**而不是 zip（目录名 = 同名 zip 去 `.zip`）。
+//! 只对 Java 目标有效；Bedrock 目标 + `--folder` 会明确报错（`.mcpack` 是单文件产物）。
+//! 目标目录已存在时**报错而不覆盖**（folder 输出会先清空目标，误删风险太高）。
 //!
 //! `--delete-shaders` 与 GUI 转换页上的同名开关是**同一个参数**（默认关）：
 //! 转完后把 `assets/minecraft/shaders` 与顶层 `shaders/` 整棵删掉。它存在的目的
@@ -31,8 +38,8 @@ use serde::Serialize;
 
 use two_pyramid_lib::arom::engine::scheduler::TaskTiming;
 use two_pyramid_lib::{
-    analyze_zip, pack_format_label_for_output, process_zip_timed, resolve_target_format,
-    ConversionTiming, PackAnalysis,
+    analyze_zip, pack_format_label_for_output, process_zip_timed, render_target_versions,
+    resolve_target_format, ConversionTiming, PackAnalysis,
 };
 
 /// 单个任务的画像条目（报告用）。
@@ -137,6 +144,35 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+/// 产物体积（字节）：文件取 `len`；目录（`--folder` 输出）取递归文件大小之和。
+///
+/// 报告里的 `outputBytes` 是"产物实际占用"，因此在 folder 模式下必须递归求和，
+/// 否则 `metadata(dir).len()` 在 Windows 上返回 0，报告会显示 0 MB 输出。
+fn path_size_bytes(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.is_file() {
+        return Some(meta.len());
+    }
+    let mut total = 0u64;
+    for entry in walkdir::WalkDir::new(path).into_iter().filter_map(Result::ok) {
+        if let Ok(m) = entry.metadata() {
+            if m.is_file() {
+                total = total.saturating_add(m.len());
+            }
+        }
+    }
+    Some(total)
+}
+
+/// `--versions` 入口：打印全部目标标签 + pack_format。
+///
+/// 数据源在 `version_converter::supported_target_versions`（`TARGET_LABELS` +
+/// `pack_format_label_for_output`），CLI **不另抄一份表**——否则两处会漂移。
+pub fn run_versions() -> i32 {
+    print!("{}", render_target_versions());
+    0
+}
+
 /// `--convert` 入口。返回进程退出码。
 pub fn run_convert(args: &[String], idx: usize) -> i32 {
     // CLI 是短命进程：临时目录清理交给脱离进程的 rmdir 子进程，
@@ -147,7 +183,7 @@ pub fn run_convert(args: &[String], idx: usize) -> i32 {
         Some(v) => v.clone(),
         None => {
             eprintln!(
-                "用法: 2-pyramid.exe --convert <资源包.zip | 目录> [--to <版本|pack_format>] [--out <目录>] [--report <报告.json>] [--fast] [--delete-shaders] [--no-item-definitions] [--cit] [--delete-cit] [--no-gen-metadata]"
+                "用法: 2-pyramid.exe --convert <资源包.zip | 目录> [--to <版本|pack_format>] [--out <目录>] [--report <报告.json>] [--folder] [--fast] [--delete-shaders] [--no-item-definitions] [--cit] [--delete-cit] [--no-gen-metadata]\n       2-pyramid.exe --versions"
             );
             return 2;
         }
@@ -189,6 +225,9 @@ pub fn run_convert(args: &[String], idx: usize) -> i32 {
     // 2pyr-gen 元数据：与 GUI 默认一致（默认写），`--no-gen-metadata` 关闭。
     // 关闭后产物里不会出现 `2pyr-gen.json`；文件内容与披露见 `legal/EULA.md`。
     let write_gen_metadata = !args.iter().any(|a| a == "--no-gen-metadata");
+    // **产物形态**：`--folder` 输出目录；缺省仍是 zip。
+    // Bedrock 目标 + `--folder` 由管线层直接报错（不静默改 zip）。
+    let folder_output = args.iter().any(|a| a == "--folder");
     let out_dir = arg_value(args, "--out").map(PathBuf::from);
     let report_path = arg_value(args, "--report").map(PathBuf::from);
 
@@ -215,6 +254,15 @@ pub fn run_convert(args: &[String], idx: usize) -> i32 {
     if let Some(dir) = &out_dir {
         println!("    输出目录：{}", dir.display());
     }
+    // 产物形态写进横幅：产物是目录还是 zip，用户/脚本先看这里就能确认。
+    println!(
+        "    输出形态：{}",
+        if folder_output {
+            "文件夹（--folder）"
+        } else {
+            "ZIP"
+        }
+    );
     // 元数据开关也打印出来：产物里多/少一个文件时，用户先看这里就能确认原因。
     // Bedrock 目标（1000）由管线层判掉、不写该文件，横幅必须如实显示
     // "不写（Bedrock 目标）"——否则用户会照着横幅去找一个不存在的文件。
@@ -269,10 +317,13 @@ pub fn run_convert(args: &[String], idx: usize) -> i32 {
             convert_cit,
             delete_cit,
             write_gen_metadata,
+            // `--folder` → 目录产物（Java 目标；Bedrock 会明确报错）。
+            folder_output,
         ) {
             Ok((output, timing)) => {
                 convert_secs += convert_start.elapsed().as_secs_f32();
-                let output_bytes = std::fs::metadata(&output).ok().map(|m| m.len());
+                // 产物体积：zip 取文件大小；folder 输出取递归文件大小之和。
+                let output_bytes = path_size_bytes(Path::new(&output));
                 let profile: Vec<TaskProfileEntry> = timing
                     .task_profile
                     .iter()

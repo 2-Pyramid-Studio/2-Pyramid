@@ -139,7 +139,8 @@ pub use pack::diff as pack_diff;
 
 /// 无界面转换 CLI 所需的管线入口与版本解析。
 pub use pack::version_converter::{
-    pack_format_label_for_output, process_zip_timed, resolve_target_format, ConversionTiming,
+    pack_format_label_for_output, process_zip_timed, render_target_versions,
+    resolve_target_format, ConversionTiming,
 };
 
 /// 后台临时目录清理的等待接口（CLI 退出前调用）。

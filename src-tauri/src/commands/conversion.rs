@@ -172,6 +172,8 @@ pub async fn convert_zip(
             false,
             false,
             true,
+            // 旧入口不暴露输出形态：保持 zip；folder 输出只走批量命令/CLI。
+            false,
         )
     }).await;
 
@@ -224,6 +226,22 @@ pub async fn convert_resource_pack(
     }
 }
 
+/// 把前端/CLI 传来的输出形态字符串归一化为"是否 folder 输出"。
+///
+/// 契约：`None` / `"zip"` → `false`；`"folder"` → `true`；其它 → `Err`。
+/// **不静默回退**：前端如果把 `outputFormat` 拼错，回退成 zip 会让用户以为"文件夹输出
+/// 打开了但其实没有"——这类静默降级比报错更难排查。
+pub(crate) fn parse_output_format(output_format: Option<&str>) -> Result<bool, String> {
+    match output_format {
+        None => Ok(false),
+        Some("zip") => Ok(false),
+        Some("folder") => Ok(true),
+        Some(other) => Err(format!(
+            "未知 output_format: {other:?}（仅支持 \"zip\" / \"folder\"）"
+        )),
+    }
+}
+
 /// Batch resource pack conversion command. Runs in the blocking
 /// thread pool so the UI never stalls; packs are converted in parallel
 /// (bounded by `CONCURRENT_PACKS`) and the loop checks the global
@@ -246,6 +264,15 @@ pub async fn convert_resource_pack(
 /// （本次转换的参数记录，契约见 [`crate::gen_metadata`]）。缺省按 true——旧前端
 /// 不发这个参数时行为与新默认一致；关闭后产物里不会出现该文件。它**只对 Java
 /// 目标**生效（Bedrock 目标由 `process_zip_timed` 判掉并留日志）。
+///
+/// `output_format`（**默认 `None` → "zip"**）：产物形态。
+/// * `None` / `Some("zip")`：每个包输出 `<名字>.zip`（历史行为，不变）；
+/// * `Some("folder")`：输出**目录**（目录名 = 同名 zip 去 `.zip`），Java 目标下由管线
+///   直接物化目录；Bedrock 目标 + folder 由 `process_zip_timed` 返回明确错误；
+/// * 其它取值 → 明确报错（不静默回退 zip，避免前端拼错字符串后"看起来成功"）。
+///
+/// 与 `write_gen_metadata` 一样，这里只做**归一化 + 透传**；产物路径/安全规则都在
+/// `version_converter`（`build_folder_output_path` / `prepare_folder_output`）。
 #[tauri::command]
 pub async fn convert_resource_packs_batch(
     file_paths: Vec<String>,
@@ -258,12 +285,15 @@ pub async fn convert_resource_packs_batch(
     convert_cit: Option<bool>,
     delete_cit: Option<bool>,
     write_gen_metadata: Option<bool>,
+    output_format: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
     use std::time::Instant;
 
     use crate::log_info;
     use crate::log_error;
 
+    // 输出形态归一化：缺省 = zip；未知值直接报错（契约只接受 "zip" / "folder"）。
+    let folder_output = parse_output_format(output_format.as_deref())?;
     let fix_alpha = fix_alpha_layers.unwrap_or(false);
     // 实验项：默认开启，保持 2.1.1 以来的着色器适配行为
     let adapt_shaders = adapt_shaders.unwrap_or(true);
@@ -327,6 +357,11 @@ pub async fn convert_resource_packs_batch(
         delete_cit,
         write_gen_metadata
     );
+    // 产物形态必须留痕：产物是 zip 还是目录，用户/日志要能一眼回答。
+    log_info!(
+        "output_format: {}",
+        if folder_output { "folder" } else { "zip" }
+    );
     log_info!("{}", "=".repeat(60));
 
     let start_time = Instant::now();
@@ -389,6 +424,8 @@ pub async fn convert_resource_packs_batch(
                 delete_cit,
                 // 2pyr-gen 元数据：Java 目标才写，Bedrock 目标由管线层判掉。
                 write_gen_metadata,
+                // 产物形态：zip（缺省）或 folder（Java 目标直接物化目录）。
+                folder_output,
             ) {
                 Ok((result_path, timing)) => {
                     let elapsed = file_start.elapsed();
@@ -398,9 +435,14 @@ pub async fn convert_resource_packs_batch(
                         file_name, result_path);
 
                     if let Some(ref dir) = output_path {
-                        match build_output_path_for_batch(std::path::Path::new(file_path), target_format, None, Some(dir)) {
-                            Ok(p) => log_info!("  Output location: {}", p.display()),
-                            Err(e) => log_info!("  Output location error: {}", e),
+                        if folder_output {
+                            // folder 输出：result_path 就是最终目录，直接报它。
+                            log_info!("  Output dir: {}", result_path);
+                        } else {
+                            match build_output_path_for_batch(std::path::Path::new(file_path), target_format, None, Some(dir)) {
+                                Ok(p) => log_info!("  Output location: {}", p.display()),
+                                Err(e) => log_info!("  Output location error: {}", e),
+                            }
                         }
                     }
 
@@ -531,5 +573,27 @@ pub async fn convert_resource_packs_batch(
             log_error!("Batch conversion thread failed: {}", e);
             Err(format!("Thread execution failed: {}", e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_output_format;
+
+    /// **输出形态契约**：缺省/zip → false，folder → true，未知值必须报错。
+    ///
+    /// 为什么钉住"未知值报错"：`outputFormat` 是前端传进来的字符串，拼错时静默回退
+    /// 成 zip 会让用户以为文件夹输出生效了；这里让错误在命令入口就暴露。
+    #[test]
+    fn output_format_contract() {
+        assert_eq!(parse_output_format(None).expect("None"), false);
+        assert_eq!(parse_output_format(Some("zip")).expect("zip"), false);
+        assert_eq!(parse_output_format(Some("folder")).expect("folder"), true);
+
+        let err = parse_output_format(Some("dir")).expect_err("未知取值必须报错");
+        assert!(err.contains("output_format"), "{err}");
+        assert!(err.contains("folder"), "错误信息要提示合法取值：{err}");
+        let err = parse_output_format(Some("ZIP")).expect_err("大小写不宽容（契约是小写）");
+        assert!(err.contains("zip"), "{err}");
     }
 }

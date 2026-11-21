@@ -503,12 +503,20 @@ fn sanitize_filename_component(s: &str) -> String {
         .collect()
 }
 
-pub fn build_output_path(
+/// `build_output_path` 与 `build_folder_output_path` 共用的**命名与输出目录**计算。
+///
+/// 两者只有"末尾是文件（带扩展名 + 冲突加序号）"还是"目录（无扩展名 + 已存在则报错）"
+/// 的差别；命名模板、`[Ver]/[Name]/[Time]/[Date]` 替换、`--out`/固定目录、
+/// `parent_folder_path` 规则必须在**同一处**，否则 zip 与 folder 两种产物会起不同的名字。
+///
+/// 返回 `(output_dir, stem)`；`output_dir` 已 `create_dir_all`（它是**容器目录**，
+/// 创建它不覆盖任何东西；真正的目标是否是已存在目录由调用方判定）。
+fn output_target_dir_and_stem(
     input_zip: &Path,
     target_version: u32,
     parent_folder_path: Option<&str>,
     output_dir_override: Option<&str>,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, String), String> {
     let label = pack_format_label(target_version);
     let base_name = input_zip
         .file_stem()
@@ -535,9 +543,6 @@ pub fn build_output_path(
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let date = Local::now().format("%Y-%m-%d").to_string();
     let stem = apply_naming_template(&template, &cleaned_base, label, &stamp, &date);
-    // 基岩版产物为 .mcpack（本质仍是 zip）
-    let ext = if target_version == 1000 { "mcpack" } else { "zip" };
-    let mut file_name = format!("{}.{}", stem, ext);
 
     let output_dir = if let Some(override_dir) = output_dir_override {
         Path::new(override_dir).to_path_buf()
@@ -557,6 +562,21 @@ pub fn build_output_path(
     fs::create_dir_all(&output_dir)
         .map_err(|e| format!("failed to create output directory {}: {}", output_dir.display(), e))?;
 
+    Ok((output_dir, stem))
+}
+
+pub fn build_output_path(
+    input_zip: &Path,
+    target_version: u32,
+    parent_folder_path: Option<&str>,
+    output_dir_override: Option<&str>,
+) -> Result<PathBuf, String> {
+    let (output_dir, stem) =
+        output_target_dir_and_stem(input_zip, target_version, parent_folder_path, output_dir_override)?;
+    // 基岩版产物为 .mcpack（本质仍是 zip）
+    let ext = if target_version == 1000 { "mcpack" } else { "zip" };
+    let mut file_name = format!("{}.{}", stem, ext);
+
     // Collision handling is always "append a numeric suffix" — the
     // user chose never to overwrite (see naming settings discussion).
     let mut output_path = output_dir.join(&file_name);
@@ -569,6 +589,124 @@ pub fn build_output_path(
 
     Ok(output_path)
 }
+
+/// 文件夹输出的目标目录：命名规则与 [`build_output_path`] **完全相同**，
+/// 只是把 `{stem}.zip` 换成目录 `{stem}`（目录名 = zip 名去 `.zip`）。
+///
+/// **不做冲突加序号**：folder 输出"目标已存在"由调用方显式报错
+/// （见 [`prepare_folder_output`]），因为物化目录会**先清空**目标
+/// （`native_run` 的 `Output::Dir` 语义），静默删除用户已有目录的风险
+/// 远大于多按一次删除/改名。zip 路径的"加 (n)" 规则在这里**不适用**。
+pub fn build_folder_output_path(
+    input_zip: &Path,
+    target_version: u32,
+    parent_folder_path: Option<&str>,
+    output_dir_override: Option<&str>,
+) -> Result<PathBuf, String> {
+    let (output_dir, stem) =
+        output_target_dir_and_stem(input_zip, target_version, parent_folder_path, output_dir_override)?;
+    Ok(output_dir.join(stem))
+}
+
+/// 路径比较用的归一化键：绝对化（相对路径按当前目录）→ 去掉 `.`/`..` →
+/// 统一分隔符 → 小写（Windows 文件系统大小写不敏感；在 Linux 上小写只会让比较更严）。
+fn path_key(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for comp in absolute.components() {
+        use std::path::Component;
+        match comp {
+            Component::Prefix(p) => parts.push(p.as_os_str().to_string_lossy().to_lowercase()),
+            Component::RootDir => parts.push(String::new()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // 绝对路径里 `..` 越不过根；弹出最后一个普通段即可。
+                if parts.len() > 1 {
+                    parts.pop();
+                }
+            }
+            Component::Normal(s) => parts.push(s.to_string_lossy().to_lowercase()),
+        }
+    }
+    parts.join("/")
+}
+
+/// `path` 是否等于 `ancestor` 或位于其下（按 [`path_key`] 归一化后比较）。
+fn is_same_or_under(path: &Path, ancestor: &Path) -> bool {
+    let p = path_key(path);
+    let a = path_key(ancestor);
+    p == a || p.starts_with(&format!("{a}/"))
+}
+
+/// **folder 输出路径安全门**（写盘前调用）。
+///
+/// 必须挡住三类会毁数据的输入（契约明确要求）：
+/// 1. **输出 == 输入**（同一路径：会把输入当产物目录清空）；
+/// 2. **输出在输入内部**（输入是目录时，产物写进输入树，harvest 会把源当产物）；
+/// 3. **输入在输出内部**（物化目录会先清空目标 ⇒ 输入包会被删除）。
+///
+/// 4. 以及 **目标目录已存在**：这里直接报错而不覆盖。理由：
+///    `native_run` 的 `Output::Dir` 会先清空目标目录再物化，而任意一个同名目录
+///    都可能是用户自己的文件夹；zip 路径的既有策略也是**从不覆盖**（冲突时加 `(n)`），
+///    folder 路径沿用"不覆盖"精神，但改为显式报错（加序号会让用户以为产物丢了）。
+fn prepare_folder_output(input: &Path, output_dir: &Path) -> Result<(), String> {
+    if is_same_or_under(output_dir, input) {
+        return Err(format!(
+            "文件夹输出路径非法：输出目录 {} 与输入 {} 相同或位于其内部",
+            output_dir.display(),
+            input.display()
+        ));
+    }
+    if is_same_or_under(input, output_dir) {
+        return Err(format!(
+            "文件夹输出路径非法：输出目录 {} 包含输入 {}（物化会先清空目标目录，输入包会被删除）",
+            output_dir.display(),
+            input.display()
+        ));
+    }
+    if output_dir.exists() {
+        return Err(format!(
+            "输出目录已存在：{}（folder 输出不覆盖已有目录；请先删除/改名，或换一个输出目录）",
+            output_dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// **受支持的目标版本标签 + pack_format**（`--versions` 的单一数据源）。
+///
+/// 直接复用 [`TARGET_LABELS`]（`resolve_target_format` 的同一张表），末尾补
+/// Bedrock：它不在 `TARGET_LABELS` 里（走 `bedrock` 特判），但它确实是一个可选的
+/// "目标"，`--versions` 必须能列出来，否则脚本无法枚举全部目标。
+pub fn supported_target_versions() -> Vec<(&'static str, u32)> {
+    let mut versions: Vec<(&'static str, u32)> = TARGET_LABELS.to_vec();
+    versions.push(("Bedrock Latest", 1000));
+    versions
+}
+
+/// CLI `--versions` 的输出文本。
+///
+/// 格式刻意保持**机器可读**：`#` 开头注释行 + 三列 TAB 分隔
+/// （`spec` / `pack_format` / 显示标签）。`spec` 可以直接传给 `--to`。
+pub fn render_target_versions() -> String {
+    let mut out = String::new();
+    out.push_str("# 2-Pyramid supported target versions\n");
+    out.push_str("# spec\tpack_format\tlabel\n");
+    for (spec, format) in supported_target_versions() {
+        out.push_str(&format!(
+            "{spec}\t{format}\t{}\n",
+            pack_format_label_for_output(format)
+        ));
+    }
+    out
+}
+
 
 /// **已解压目录**上的转换（**仅测试使用**，§9.119）。
 ///
@@ -656,10 +794,10 @@ pub fn process_extracted_dir_only(
 }
 
 pub fn convert_resource_pack(file_path: &str, target_version: u32) -> Result<String, String> {
-    // 单包兼容入口不暴露 shaders 删除与物品定义 / CIT / 元数据开关，一律走**默认值**：
-    // `delete_shaders = false`、`convert_item_definitions = true`、
+    // 单包兼容入口不暴露 shaders 删除与物品定义 / CIT / 元数据 / folder 输出开关，
+    // 一律走**默认值**：`delete_shaders = false`、`convert_item_definitions = true`、
     // `convert_cit = false`（A1 止血之后的新默认）、`delete_cit = false`、
-    // `write_gen_metadata = true`（与 GUI 一致）。
+    // `write_gen_metadata = true`（与 GUI 一致）、`folder_output = false`（输出 zip）。
     process_zip(
         file_path,
         target_version,
@@ -674,6 +812,7 @@ pub fn convert_resource_pack(file_path: &str, target_version: u32) -> Result<Str
         false,
         false,
         true,
+        false,
     )
 }
 
@@ -725,7 +864,8 @@ pub struct ConversionTiming {
 ///
 /// `delete_shaders` 见 [`process_zip_timed`] 的说明：**默认必须传 false**，
 /// 它是用户在转换页显式打开的"删掉 shaders"选项，不是默认行为。
-/// 末尾参数是物品定义 / CIT 的开关与 2pyr-gen 元数据开关，见 [`process_zip_timed`] 的说明。
+/// 末尾参数是物品定义 / CIT 的开关、2pyr-gen 元数据开关与**folder 输出开关**，
+/// 见 [`process_zip_timed`] 的说明。
 #[allow(clippy::too_many_arguments)]
 pub fn process_zip(
     original_file_path: &str,
@@ -741,6 +881,7 @@ pub fn process_zip(
     convert_cit: bool,
     delete_cit: bool,
     write_gen_metadata: bool,
+    folder_output: bool,
 ) -> Result<String, String> {
     process_zip_timed(
         original_file_path,
@@ -758,6 +899,7 @@ pub fn process_zip(
         convert_cit,
         delete_cit,
         write_gen_metadata,
+        folder_output,
     )
     .map(|(path, _timing)| path)
 }
@@ -798,6 +940,17 @@ pub fn process_zip(
 /// 因此"是不是 Bedrock 目标"必须用**对外目标格式**判断，且只能在这一层判断；判定
 /// 由 [`should_write_gen_metadata`] 单独负责并有单测。写入点在 `run_native` 的 tail
 /// （与 `pack.mcmeta` 改写同一处），因此 Zip / Dir 两种输出天然都覆盖。
+///
+/// **`folder_output`**：产物形态。`false` = ZIP（历史行为）；`true` = 目录。
+/// 目录路径由 [`build_folder_output_path`] 生成（命名模板与 zip **完全相同**，去扩展名），
+/// 且 **Java 目标直接 `run_native(... Output::Dir(path))`**，不再写 zip / 不再重打包。
+/// 三条硬约束：
+/// * **Bedrock 目标（1000）+ folder = 明确报错**（`.mcpack` 是单文件产物，语义上不存在
+///   "文件夹版基岩包"；静默改成 zip 会让脚本以为产物形态符合预期）；
+/// * 目标目录**已存在 → 报错、不覆盖**（`Output::Dir` 会先清空目标，误删用户目录的
+///   代价太大；理由见 [`prepare_folder_output`]）；
+/// * 输出==输入 / 输出在输入内部 / 输入在输出内部 → 报错（同上）。
+/// * `2pyr-gen.json` 由 tail 写入，Zip / Dir 两条路径都覆盖（`native_run` 有单测钉住）。
 #[allow(clippy::too_many_arguments)]
 pub fn process_zip_timed(
     original_file_path: &str,
@@ -814,6 +967,7 @@ pub fn process_zip_timed(
     convert_cit: bool,
     delete_cit: bool,
     write_gen_metadata: bool,
+    folder_output: bool,
 ) -> Result<(String, ConversionTiming), String> {
     let input_zip = Path::new(original_file_path);
     if !input_zip.exists() {
@@ -823,6 +977,14 @@ pub fn process_zip_timed(
     // 目标为 Bedrock（1000）或输入为 Bedrock 包时的编排。
     // 结构转换逻辑在 bedrock_convert/*；此处只调度 Scheduler 边任务。
     let is_bedrock_target = pack_format2 == 1000;
+    // **folder 输出只对 Java 目标存在**：Bedrock 产物是单文件 `.mcpack`。
+    // 这里必须**显式报错**而不是静默退回 zip——脚本/前端是按产物形态分配后续动作的。
+    if folder_output && is_bedrock_target {
+        return Err(
+            "Bedrock 目标不支持文件夹输出（.mcpack 是单文件产物；请去掉 --folder / outputFormat=folder）"
+                .to_string(),
+        );
+    }
     // Bedrock 中间态统一到最新 Java 26.3（pack_format 97），再经边 (97→1000) 重组
     let java_target = if is_bedrock_target { 97 } else { pack_format2 };
 
@@ -992,8 +1154,25 @@ pub fn process_zip_timed(
     // （路径/大小/CRC 全等）。唯一差别是 zip 内条目顺序——而重打包那条路走
     // `walkdir` 的枚举顺序，本来就不确定；`write_zip` 的顺序由 `OrderPolicy` 决定，
     // 反而更确定。因此这是**语义等价**的替换。
-    let java_direct_zip: Option<PathBuf> = if is_bedrock_target {
+    //
+    // **folder 输出**：Java + `folder_output` 时管线直接
+    // `Output::Dir(最终目录)`——不再"物化到 temp 再重打包"，而是把最终视图一次写到
+    // 用户可见的目标目录（`run_native` 的 `Output::Dir` 会先清空目标，因此上面
+    // `prepare_folder_output` 必须先确认目标不存在且路径安全）。
+    let java_output: Option<PathBuf> = if is_bedrock_target {
         None
+    } else if folder_output {
+        let dir = build_folder_output_path(
+            input_zip,
+            pack_format2,
+            parent_folder_path,
+            output_dir_override,
+        )?;
+        // 安全门：输出==输入 / 输出在输入内 / 输入在输出内 / 目标已存在 → 报错。
+        // 必须在 `run_native(Output::Dir)` 之前——它会先清空目标目录。
+        prepare_folder_output(input_zip, &dir)?;
+        log_info!("folder output: materialize to {}", dir.display());
+        Some(dir)
     } else {
         Some(build_output_path(
             input_zip,
@@ -1057,8 +1236,11 @@ pub fn process_zip_timed(
         // `tail`：把 `pack.mcmeta` 的 `pack_format` 改写到目标版本。
         // `run_native` 会在 workdir 上跑一次随后收获——与旧管线**同一套逻辑**，不重复实现。
         let java_target_for_tail = java_target;
-        let output_sink = match &java_direct_zip {
+        let output_sink = match &java_output {
+            // Java + folder：最终视图直接物化到用户目录（无 zip 往返）。
+            Some(p) if folder_output => crate::native_run::Output::Dir(p.clone()),
             Some(p) => crate::native_run::Output::Zip(p.clone()),
+            // Bedrock 目标：物化回 temp_dir，管线之后还要跑 j2b 边任务。
             None => crate::native_run::Output::Dir(temp_dir.path().to_path_buf()),
         };
         let report = crate::native_run::run_native(
@@ -1087,9 +1269,10 @@ pub fn process_zip_timed(
     // `pack.mcmeta` 已由上面的 `tail` 写好（§9.118）；此处保留一次"幂等复核"，
     // 使行为与改动前**逐字相同**——若 `pack.mcmeta` 存在而版本不符，这里会再写一次。
     //
-    // **§9.143：Java 路径下这一步是空操作。** 管线不再物化目录（直接写 zip），
-    // 因此 `temp_dir` 里是**源树**，不该也不能在这里改写它的 `pack.mcmeta`——
-    // 改的会是输入而不是产物。zip 内的 `pack.mcmeta` 已由管线内的 `tail` 写为目标版本。
+    // **§9.143：Java 路径下这一步是空操作。** 管线不再把最终产物放 `temp_dir`
+    // （zip 模式直接写 zip，folder 模式直接物化到用户目录），因此 `temp_dir` 里是
+    // **源树**，不该也不能在这里改写它的 `pack.mcmeta`——改的会是输入而不是产物。
+    // 产物的 `pack.mcmeta` 已由管线内的 `tail` 写为目标版本。
     let post_start = std::time::Instant::now();
     if is_bedrock_target {
         let pack_meta_path = temp_dir.path().join("pack.mcmeta");
@@ -1110,9 +1293,9 @@ pub fn process_zip_timed(
     let engine_elapsed = engine_start.elapsed();
 
     let pack_start = std::time::Instant::now();
-    // **§9.143**：Java 目标的 zip 已由管线直接写出，这里不再重打包；
+    // **§9.143**：Java 目标的产物（zip 或 folder）已由管线直接写出/物化，这里不再重打包；
     // Bedrock 目标仍走"目录 → 边任务 → 重打包"。
-    let output_path = match &java_direct_zip {
+    let output_path = match &java_output {
         Some(p) => p.clone(),
         None => {
             let p = build_output_path(input_zip, pack_format2, parent_folder_path, output_dir_override)?;
@@ -1123,7 +1306,7 @@ pub fn process_zip_timed(
     let pack_elapsed = pack_start.elapsed();
 
     if !output_path.exists() {
-        return Err(format!("output file not found after repack: {}", output_path.display()));
+        return Err(format!("output not found after conversion: {}", output_path.display()));
     }
 
     let total_elapsed = total_start.elapsed();
@@ -1288,6 +1471,50 @@ mod tests {
         zip_path
     }
 
+    /// 递归列出目录下所有**文件**的相对路径（`/` 分隔、排序；目录条目不算）。
+    fn list_dir_files(root: &Path) -> Vec<String> {
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+            for entry in fs::read_dir(dir).expect("read_dir") {
+                let entry = entry.expect("dir entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    let rel = path
+                        .strip_prefix(root)
+                        .expect("strip prefix")
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.push(rel);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(root, root, &mut files);
+        files.sort();
+        files
+    }
+
+    /// 读 zip 里的全部**文件**条目 `(路径, 内容)`，按路径排序（目录条目跳过）。
+    fn zip_file_entries(path: &Path) -> Vec<(String, Vec<u8>)> {
+        use std::io::Read as _;
+        let f = fs::File::open(path).expect("open zip");
+        let mut ar = zip::ZipArchive::new(f).expect("read zip");
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        for i in 0..ar.len() {
+            let mut e = ar.by_index(i).expect("entry");
+            if e.is_dir() {
+                continue;
+            }
+            let name = e.name().to_string();
+            let mut bytes = Vec::new();
+            e.read_to_end(&mut bytes).expect("read entry");
+            files.push((name, bytes));
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+    }
+
     #[test]
     fn timing_reports_pure_and_total() {
         let dir = tempdir().expect("tempdir");
@@ -1311,6 +1538,7 @@ mod tests {
             false,  // convert_cit：A1 之后默认关（夹具没有 CIT 文件，取值不影响断言）
             false,  // delete_cit：默认关
             true,   // write_gen_metadata：默认开（产物多一个 2pyr-gen.json，本用例不数条目）
+            false,  // folder_output：本用例验证 zip 输出
         )
         .expect("conversion should succeed");
 
@@ -1415,6 +1643,7 @@ mod tests {
                 false, // convert_cit：A1 之后默认关
                 false, // delete_cit
                 write_gen_metadata,
+                false, // folder_output：本用例验证 zip 输出
             )
             .expect("conversion should succeed");
             PathBuf::from(path)
@@ -1804,5 +2033,264 @@ mod tests {
             97,
             "write_pack_format(97) 的产物必须能被读回 97"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // folder 输出（--folder / outputFormat=folder）
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// 跑一次转换的测试助手：固定开关、可变 folder 输出。
+    ///
+    /// `out_dir_override` 传一个**独立的空目录**；folder 输出会在其下建目标目录。
+    fn run_convert(
+        src: &str,
+        out_dir: &Path,
+        folder_output: bool,
+        target: u32,
+        write_gen_metadata: bool,
+    ) -> Result<(String, ConversionTiming), String> {
+        process_zip_timed(
+            src,
+            target,
+            None,
+            1.0,
+            None,
+            Some(out_dir.to_str().expect("out path")),
+            false, // fix_alpha_layers
+            true,  // adapt_shaders
+            true,  // run_gui_surgeon
+            false, // delete_shaders
+            true,  // convert_item_definitions
+            false, // convert_cit
+            false, // delete_cit
+            write_gen_metadata,
+            folder_output,
+        )
+    }
+
+    /// **契约 ①**：folder 与 zip 两种输出的条目集合/内容等价（忽略顺序），
+    /// 且 folder 产物根有 `pack.mcmeta` 与 `2pyr-gen.json`。
+    #[test]
+    fn folder_output_matches_zip_entries_and_contains_gen_metadata() {
+        let dir = tempdir().expect("tempdir");
+        let zip_path = tiny_pack_zip(dir.path());
+        let src = zip_path.to_str().expect("path").to_string();
+
+        let zip_root = dir.path().join("out_zip");
+        let folder_root = dir.path().join("out_folder");
+        fs::create_dir_all(&zip_root).expect("mkdir zip out");
+        fs::create_dir_all(&folder_root).expect("mkdir folder out");
+
+        let (zip_out, _) =
+            run_convert(&src, &zip_root, false, 34, true).expect("zip conversion");
+        let (folder_out, _) =
+            run_convert(&src, &folder_root, true, 34, true).expect("folder conversion");
+
+        // folder 产物是一个目录，不是 zip
+        let folder_path = PathBuf::from(&folder_out);
+        assert!(
+            folder_path.is_dir(),
+            "folder 输出必须是目录：{}",
+            folder_path.display()
+        );
+        assert!(!folder_path.extension().is_some_and(|e| e == "zip"));
+        assert!(folder_path.join("pack.mcmeta").is_file(), "缺少 pack.mcmeta");
+        let gen_path = folder_path.join("2pyr-gen.json");
+        assert!(gen_path.is_file(), "folder 产物缺少 2pyr-gen.json");
+
+        // 2pyr-gen 内容：目标格式正确（tail 对 Dir 路径同样生效）
+        let gen: Value =
+            serde_json::from_slice(&fs::read(&gen_path).expect("read gen")).expect("parse gen");
+        assert_eq!(gen["target_pack_format"], 34);
+        assert_eq!(gen["source_pack_format"], 15);
+
+        // 条目集合 + 内容等价（除 2pyr-gen.json 外逐字节比较：它含 generated_at 时间戳，
+        // 两次独立转换必然可能不同——这是 2pyr-gen 契约自己声明的"运行时刻"）。
+        let zip_entries = zip_file_entries(Path::new(&zip_out));
+        let dir_files = list_dir_files(&folder_path);
+        let zip_names: Vec<String> = zip_entries.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(
+            dir_files, zip_names,
+            "folder 与 zip 的文件条目集合必须一致（folder={dir_files:?} zip={zip_names:?}）"
+        );
+        assert!(
+            dir_files.iter().any(|n| n == "2pyr-gen.json"),
+            "条目集合里必须有 2pyr-gen.json：{dir_files:?}"
+        );
+        for (name, zip_bytes) in &zip_entries {
+            if name == "2pyr-gen.json" {
+                continue;
+            }
+            let dir_bytes = fs::read(folder_path.join(name))
+                .unwrap_or_else(|e| panic!("读 folder 条目 {name} 失败：{e}"));
+            assert_eq!(
+                &dir_bytes, zip_bytes,
+                "条目 {name} 在 folder 与 zip 产物里内容不一致"
+            );
+        }
+        // pack.mcmeta 必须被 tail 改成目标版本（两条路径同一条 tail）
+        let mcmeta = fs::read_to_string(folder_path.join("pack.mcmeta")).expect("read mcmeta");
+        assert!(
+            mcmeta.contains("\"pack_format\": 34") || mcmeta.contains("\"pack_format\":34"),
+            "folder 产物 pack.mcmeta 未写入目标版本：{mcmeta}"
+        );
+        // folder 产物里不应再套一个 zip
+        assert!(
+            dir_files.iter().all(|n| !n.ends_with(".zip")),
+            "folder 产物里出现了 zip 文件：{dir_files:?}"
+        );
+    }
+
+    /// **契约 ②**：folder 输出的路径安全门（不覆盖输入、不在输入内部、不覆盖已有目录）。
+    #[test]
+    fn folder_output_path_safety_guards() {
+        let dir = tempdir().expect("tempdir");
+        let zip_path = tiny_pack_zip(dir.path());
+        let src = zip_path.to_str().expect("path").to_string();
+
+        // (a) 目标目录已存在 → 明确报错、不覆盖（`Output::Dir` 会先清空目标，
+        //     若静默继续，用户已有目录会被删掉）。
+        let out_root = dir.path().join("existing");
+        fs::create_dir_all(&out_root).expect("mkdir");
+        let target = build_folder_output_path(
+            Path::new(&src),
+            34,
+            None,
+            Some(out_root.to_str().expect("out")),
+        )
+        .expect("build folder path");
+        fs::create_dir_all(&target).expect("mkdir target");
+        let err = run_convert(&src, &out_root, true, 34, true)
+            .expect_err("已存在的目标目录必须报错");
+        assert!(
+            err.contains("输出目录已存在"),
+            "错误信息必须说清为什么（含“输出目录已存在”）：{err}"
+        );
+        assert!(
+            target.is_dir(),
+            "报错路径不得删除或改动已有目标目录：{}",
+            target.display()
+        );
+
+        // (b) 输出 == 输入（直接调用安全门；生产里 build_folder_output_path 不会
+        //     生成一个恰好等于输入 zip 的目录，但门必须挡住这个形状）。
+        let err = prepare_folder_output(Path::new(&src), Path::new(&src))
+            .expect_err("输出==输入必须报错");
+        assert!(err.contains("相同或位于其内部"), "{err}");
+
+        // (c) 输出在输入内部（输入是目录时）：产物写进输入树会把源当产物。
+        let dir_input = dir.path().join("input_dir");
+        fs::create_dir_all(&dir_input).expect("mkdir input dir");
+        let nested = dir_input.join("nested_out");
+        let err = prepare_folder_output(&dir_input, &nested)
+            .expect_err("输出在输入内部必须报错");
+        assert!(err.contains("相同或位于其内部"), "{err}");
+
+        // (d) 输入在输出内部：物化会先清空输出目录 ⇒ 输入包会被删除。
+        let err = prepare_folder_output(Path::new(&src), dir.path())
+            .expect_err("输出包含输入必须报错");
+        assert!(err.contains("包含输入"), "{err}");
+
+        // (e) 正常路径（输出与输入互不包含、目标不存在）→ 通过
+        let ok_out = dir.path().join("fresh_out");
+        fs::create_dir_all(&ok_out).expect("mkdir");
+        let ok_target = build_folder_output_path(
+            Path::new(&src),
+            34,
+            None,
+            Some(ok_out.to_str().expect("out")),
+        )
+        .expect("build");
+        prepare_folder_output(Path::new(&src), &ok_target).expect("正常路径必须通过");
+    }
+
+    /// **契约 ③**：Bedrock 目标（1000）+ folder → 明确报错，且**不能**静默改 zip。
+    #[test]
+    fn folder_output_rejects_bedrock_target() {
+        let dir = tempdir().expect("tempdir");
+        let zip_path = tiny_pack_zip(dir.path());
+        let src = zip_path.to_str().expect("path").to_string();
+        let out_root = dir.path().join("out");
+        fs::create_dir_all(&out_root).expect("mkdir");
+
+        let err = run_convert(&src, &out_root, true, 1000, true)
+            .expect_err("Bedrock + folder 必须报错");
+        assert!(
+            err.contains("Bedrock 目标不支持文件夹输出"),
+            "错误信息必须明说：{err}"
+        );
+        // 关键：没有静默产出任何东西（既不是目录也不是 mcpack/zip）
+        let produced: Vec<_> = fs::read_dir(&out_root)
+            .expect("read out")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            produced.is_empty(),
+            "报错后不应产生任何产物：{produced:?}"
+        );
+    }
+
+    /// **契约 ④**：`--versions` 的数据源与渲染格式（TARGET_LABELS + label 映射）。
+    #[test]
+    fn versions_list_covers_all_target_labels() {
+        let versions = supported_target_versions();
+        assert_eq!(
+            versions.len(),
+            TARGET_LABELS.len() + 1,
+            "26 个 Java 区间 + Bedrock"
+        );
+        assert_eq!(versions.last(), Some(&("Bedrock Latest", 1000)));
+        // 每个 spec 都必须能被 resolve_target_format 解析回同一个 format
+        // （`--versions` 列出的 spec 就是 `--to` 接受的写法）
+        for (spec, format) in &versions {
+            assert_eq!(
+                resolve_target_format(spec).expect("spec 必须可解析"),
+                *format,
+                "spec={spec}"
+            );
+        }
+
+        let text = render_target_versions();
+        let data_lines: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(data_lines.len(), versions.len(), "每个目标一行数据");
+        assert!(text.contains("1.6-1.8\t1\tJava 1.6-1.8"), "{text}");
+        assert!(text.contains("1.21.4\t46\tJava 1.21.4"), "{text}");
+        assert!(text.contains("26.3\t97\tJava 26.3"), "{text}");
+        assert!(
+            text.contains("Bedrock Latest\t1000\tBedrock Latest"),
+            "{text}"
+        );
+        assert!(!text.contains("Unknown"), "不得出现未知标签占位：{text}");
+    }
+
+    /// folder 目录名 == zip 名去 `.zip`（两条路径共用同一套命名模板）。
+    #[test]
+    fn folder_output_name_equals_zip_name_without_extension() {
+        let dir = tempdir().expect("tempdir");
+        let zip_path = tiny_pack_zip(dir.path());
+        let out_root = dir.path().join("out");
+        fs::create_dir_all(&out_root).expect("mkdir");
+        let out = out_root.to_str().expect("out");
+
+        // 两次调用各自取一次当前时间（[Time] 模板时可能跨秒），重试几次取稳定的那一对。
+        for _ in 0..5 {
+            let zip_out = build_output_path(&zip_path, 34, None, Some(out)).expect("zip path");
+            let folder_out =
+                build_folder_output_path(&zip_path, 34, None, Some(out)).expect("folder path");
+            let zip_stem = zip_out
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .expect("zip stem");
+            let folder_name = folder_out
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .expect("folder name");
+            if zip_stem == folder_name {
+                assert_eq!(zip_out.parent(), folder_out.parent());
+                return;
+            }
+        }
+        panic!("folder 目录名必须等于同名 zip 的文件名主干（多次取样均不相等）");
     }
 }
