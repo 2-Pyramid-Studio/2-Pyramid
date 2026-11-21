@@ -2,6 +2,10 @@
 
 ### Added
 
+- **旧原版模型/方块状态指纹停用（旧包升级质量）**：新增原生任务 `drop_unmodified_legacy_models`：来源 `pack_format` 2/3（1.9–1.12）→ 目标 ≥4（1.13+）时，用「规范化 JSON 的 SHA-256」识别包里**未修改的旧原版** `models/**`、`blockstates/**` 并在产物中停用，让目标版本加载自己的原生资源；作者改过的文件、以及目标原生没有替代的路径保留并记日志。真实 1.12.2 原版模型 + 自定义模型 smoke（3→34、3→46）：`scanned=5 / removed=2 / target_missing_kept=1`，自定义文件字节不变；默认组合（如 15→34）计划完全不变。
+  - 新增 `tools/gen-mc-reference.py`（`--check` / `--offline`）：从 **27 个官方客户端 jar**（legacy 4：1.9.4 / 1.10.2 / 1.11.2 / 1.12.2；target 23：1.13.2 … 26.3）生成 `legacy-defaults.json`（1.03 MB：legacy[2] 1486 models + 360 blockstates、legacy[3] 1597 models + 408 blockstates；`target_missing` 23 档）与 11 条 synthetic 跨语言夹具；下载 jar 按 Mojang sha1 + size 校验，旧 jar 无 `version.json` 时用 launcher version json 的 id 校验并标注 `format_source:"mapping"`。jar 缓存 `tools/.mc-cache/` 不入库；仓库只提交路径 + SHA-256（不含任何官方资源），`--check` 重扫后逐字节一致。
+  - `legal/THIRD-PARTY-NOTICES.md` 中英同步披露参考数据来源，以及「只提交路径 + SHA-256、jar 缓存不随软件分发」。
+  - 测试：`cargo test --lib` 351 → **364 passed / 0 failed / 6 ignored**；注入矩阵、canonicalization 跨语言夹具（11 条真校验）、删除/保留/`target_missing`/no-op 均有用例。
 - **转换期纹理自检（默认自动，无需开关）**：管线新增两个原生任务，只改 PNG 字节、不动其它条目。
   - `fix_mislabeled_textures`（Eraser，始终执行）：内容是 JPEG（magic `FF D8 FF`）却命名为 `.png` 的贴图，解码后重编码为真 PNG；正常 PNG 逐字节不变。真实包实测扫描 1068 张耗时 99.4ms（debug，约占整包 1.2%）、0 张误改；合成样例 634B 的 JPEG 伪装图 → 144B 真 PNG，像素一致。
   - `fix_item_transparency`（Surgeon；源 `pack_format` ≤1 且目标 ≥2 时注入）：清理「大面积、触边、alpha=1–2」的假透明背景（alpha 置 0），避免 1.9+ 物品侧面沿假矩形生成。合成样例 alpha 直方图 `{2:128, 255:128} → {0:128, 255:128}`，不透明区逐像素不变；自称 `format=1` 的真实 1.20.1 包（OptiFine 内容）转 46 实测改 29/249 张。
