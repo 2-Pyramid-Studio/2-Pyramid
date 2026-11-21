@@ -1,4 +1,4 @@
-## [Unreleased]
+## [2.204.0] - 2026-11-22（BUILD 22040）
 
 ### Added
 
@@ -25,6 +25,8 @@
 
 ### Changed
 
+- **仓库迁移到 `2-Pyramid-Studio/2-Pyramid`**：更新器 API、安装器、README、legal 与 MSI 帮助链接全部指向新组织；旧客户端仍可经 GitHub 的 transfer redirect 看到并下载新版本（实测旧 API 返回 200、资产 URL 已指向新组织），因此本版为普通 `Stable-` 更新，**不使用 `Safe-` 强制升级**。
+- **legal / 数据合规复核（本版无新增运行时依赖、无新增联网行为）**：`gen-mc-reference.py` 只在开发期下载官方客户端 jar 生成参考数据；`legal/THIRD-PARTY-NOTICES.md`（中英）补充参考数据来源：只提交路径 + 规范化 JSON 的 SHA-256 与来源元信息（版本 / 字节数 / jar SHA-256），不含任何官方资源；jar 缓存 `tools/.mc-cache/` 不入库、不随软件分发。
 - **ZIP 输出使用最高 DEFLATE 级别（9）**：`write_zip` 对 Deflated 条目设置 `compression_level(9)`；Stored 白名单与「已压缩条目原样透传」语义不变。同编码器同内容实测 260,500 B 语料 41,311 → 39,730 B（−1,581 B / −3.83%）；极小/高熵数据在 9 级下可能略大（4.5KB 混合树 +26B），收益主要在多文本/大包。产物压缩字节因此与旧版本不同（条目内容逐条一致），`--pack-diff --strict` 会如实报压缩字节差异。
 - **品牌视觉落地：应用内 / 安装器 / OS 图标 / README 全部换成 Precision Geometry 资产**：
   - **OS 图标链重建**：白底圆角板 + 尺寸分档 artwork（16–24 用 micro、32–48 用 favicon、≥64 用 mark）。旧 `icon.ico` 是旧稿放大后的不透明白方块，16px 实测只有 **2** 个深色像素（近乎空白）；新 ICO 同口径 **35**、24px 15→**76**、32px 49→**90**、48px 146→**193**。MSIX 的 `Wide310x150Logo.png` / `SplashScreen.png` 还是更早的过期稿（透明底细线），已按同一设计重生成；`installer-app` 图标与主 `icon.ico` 同字节。
