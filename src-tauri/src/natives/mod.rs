@@ -640,7 +640,23 @@ pub mod surgeon_cut_gui;
 pub mod gui_surgeon_tx;
 
 
-/// 全部试点：`(名称, 声明, 执行体)`，按阶段顺序排列（与旧管线一致）。
+/// **纹理卫生组**：三个"只改 PNG 字节"的跨版本修复任务。
+///
+/// | 任务 | Tier | 触发 | 作用 |
+/// |---|---|---|---|
+/// | `fix_mislabeled_textures` | Eraser | **始终** | 内容是 JPEG 却叫 `.png` 的贴图 → 重编码成真 PNG |
+/// | `fix_alpha_layers_in_textures` | Surgeon | 用户开关 `fix_alpha_layers` | 历史「图层修复」的 9 条像素规则 |
+/// | `fix_item_transparency` | Surgeon | 源 format ≤1 且目标 ≥2 | 清掉大面积 alpha∈{1,2} 的假透明背景 |
+///
+/// **三者的计划位置都不由 `conversion_maps.rs` 决定**：它们不绑定某条版本边，
+/// 由 `native_run::inject_hygiene_tasks` 在 `Scheduler::plan` 之后**按 tier 有序注入**
+/// （A1 插在计划最前、A7/A2 插在 Surgeon 段最前），细节见那个函数与 `hygiene.rs`。
+///
+/// **来源**：A7 的像素规则移植自本仓库 MIT 历史实现
+/// `archive/legacy-converters/textures/alpha_layers.rs`；A1/A2 按 task-8 的行为契约
+/// 从零实现（竞品 Fast-Pack 是 GPL-3.0-only，只参考行为描述，未打开其源码）。
+#[path = "hygiene.rs"]
+pub mod hygiene;
 
 /// 全部试点：`(名称, 声明, 执行体)`，按阶段顺序排列（与旧管线一致）。
 pub type PilotFn = fn(&mut Tx<'_>) -> Result<Outcome, AromError>;

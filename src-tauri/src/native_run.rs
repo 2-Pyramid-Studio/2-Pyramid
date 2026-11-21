@@ -636,7 +636,7 @@ where
     // 两条用例直接钉住。
     // ══════════════════════════════════════════════════════════════════════
     let planned_len = planned.len();
-    let plan: Vec<String> = planned
+    let mut plan: Vec<String> = planned
         .into_iter()
         .filter(|name| plan_task_enabled(name, opts))
         .collect();
@@ -652,6 +652,13 @@ where
             opts.delete_cit
         );
     }
+
+    // **纹理卫生三任务：条件注入**（A1 / A2 / A7）。
+    //
+    // 注入点固定在「`plan_task_enabled` 过滤之后、`native_placements` 与 report 之前」，
+    // 因此注入任务与原计划任务享受同一套放置侧判定、并行分段与 plan_len 口径。
+    // 三个条件见 [`inject_hygiene_tasks`] 的文档；它们不来自 `conversion_maps`。
+    inject_hygiene_tasks(&mut plan, opts);
 
     // §9.93（M3）：包名与旧管线**同源**——`invoke_conversion_ex` 也是取
     // `target_path.file_stem()`（`target_path` 即输入包）。这样 Bedrock 任务在两条路径上
@@ -1288,6 +1295,12 @@ pub(crate) const CIT_ROOTS: [&str; 2] = [
 ///
 /// 注意 `delete_cit` 与 `convert_cit` **同开时删除优先**：这里直接把 CIT 任务
 /// 过滤掉，而不是让它跑完再删——删除就是删除。
+///
+/// **`fix_alpha_layers`（图层修复）不在这里处理**：它的任务
+/// `fix_alpha_layers_in_textures` 根本不来自 `Scheduler::plan`（历史实现从未进入版本边表，
+/// 以前只有 bool 透传、没有实现），而是由 [`inject_hygiene_tasks`] 在过滤之后按开关
+/// **注入**计划。开关关闭时计划里根本没有这个名字，效果等价于"过滤"，但更干净：
+/// 不会出现"计划里有、又被删掉"的中转状态，也不会让 `plan_len` 先增后减。
 fn plan_task_enabled(name: &str, opts: &MixedRunOptions) -> bool {
     match name {
         "generate_item_definitions" => opts.convert_item_definitions,
@@ -1295,6 +1308,109 @@ fn plan_task_enabled(name: &str, opts: &MixedRunOptions) -> bool {
         "adapt_java_shaders" => opts.adapt_shaders,
         _ => true,
     }
+}
+
+/// **纹理卫生三任务 → 计划注入**（A1 格式识别 / A2 假透明背景 / A7 图层修复）。
+///
+/// ## 为什么"注入"而不是写进 `conversion_maps.rs` 的版本边表
+///
+/// `conversion_maps` 表达的是「**某条版本边**要跑哪些任务」，而这三个任务的触发条件
+/// 都不是"某条边特有"：
+///
+/// * **A1** 要在**每一条边**都跑：任何包都可能有"内容是 JPEG、扩展名 `.png`"的贴图
+///   （1.6–1.8 时代工具链的遗留）；早一步修正，后面所有读贴图的任务都少踩一个坑。
+/// * **A2** 只看 `source_version <= 1 && target_version >= 2`（format 1 = 1.6–1.8，
+///   1.9 起 = 2），与具体跨几条边无关。
+/// * **A7** 只看用户开关 `MixedRunOptions::fix_alpha_layers`。
+///
+/// 塞进版本边表意味着按边复制 N 份，还会污染那张表"这条边该做什么"的可审计性。
+///
+/// ## 为什么注入点必须在「过滤之后、`native_placements` 之前」
+///
+/// * 过滤之后：`plan_task_enabled` 的口径是"原计划里的任务"，注入任务不参与过滤
+///   （A7 的开关由本函数自己消费，见 `plan_task_enabled` 的文档）；
+/// * `native_placements` 之前：注入任务要与原计划任务一样被分到 Early/Late 侧
+///   （A1 是 Eraser→Early；A2/A7 是 Surgeon→Late），走同一套放置判据；
+/// * 并行分段之前：`run_native` 按相邻 tier 切段，`insert_task_by_tier` 保证注入后
+///   计划仍 tier 非降序，否则同一 tier 会被切成两段、并行语义改变。
+///
+/// ## 顺序（依赖 + 历史）
+///
+/// 1. **A1 `fix_mislabeled_textures`**（Eraser）→ 计划**最前**。它修正的是"字节层面的
+///    伪 PNG"，越早越好（后续任务可能按扩展名处理并静默失败）。Eraser 是最低 tier，
+///    插最前天然保持有序。
+/// 2. **A7 `fix_alpha_layers_in_textures`**（Surgeon）→ Surgeon 段**最前**。历史注册表里
+///    它就排在 Surgeon 第一项（`fix_clock_compass` 之前），保持与历史实现相同的相对顺序。
+/// 3. **A2 `fix_item_transparency`**（Surgeon）→ 同样插 Surgeon 段最前，且**在 A7 之后
+///    插入**（头插 ⇒ 最终位于 A7 之前），即：先清假透明背景、再跑图层修复。
+///    两者对 alpha 图等价（A7 的规则从不变更 alpha 值），顺序只影响被清像素的 RGB，
+///    而 A2 自己会把它们置 0。
+///
+/// ## 开关与"旧管线等价"
+///
+/// 三个任务都没有旧闭包实现；`NativeSwitches::textures == false` 时**既不注入也不派发**，
+/// 保持 `NativeSwitches`「关掉某模块 = 该模块行为回到旧管线」的语义，也避免
+/// "计划里有名字、`native_for` 却拿不到实现"的契约失败。生产入口永远是 `all()`，
+/// 因此 A1 在真实转换里**始终执行**。
+fn inject_hygiene_tasks(plan: &mut Vec<String>, opts: &MixedRunOptions) {
+    if !opts.native.textures {
+        return;
+    }
+    // A1：始终执行（没有开关）。
+    insert_task_by_tier(plan, "fix_mislabeled_textures", Tier::Eraser);
+    // A7：历史「图层修复」开关，默认关 → 默认产物不变。
+    if opts.fix_alpha_layers {
+        insert_task_by_tier(plan, "fix_alpha_layers_in_textures", Tier::Surgeon);
+    }
+    // A2：旧包（1.6–1.8，format 1）升 1.9+（format ≥2）时才需要清假透明背景。
+    if opts.source_version <= 1 && opts.target_version >= 2 {
+        insert_task_by_tier(plan, "fix_item_transparency", Tier::Surgeon);
+    }
+}
+
+/// 把注入任务插到**第一个 tier 不低于它的原计划任务之前**，随后保持原计划任务的
+/// 相对顺序不变。
+///
+/// **注意：`Scheduler::plan` 的返回值并不是严格按 tier 排序的**——版本边表里任务的
+/// 登记顺序按"这条边要做什么"排列，真实计划里会出现 Architect 与 Surgeon 交错
+/// （例如 15→34 的 `[generate_snow_bucket, adapt_java_shaders, generate_redwood…]`）。
+/// 因此本函数不能假设"找到第一个更高 tier 就插到段尾"，而是找**第一个 tier >= 新任务**
+/// 的位置头插：
+///
+/// * A1（Eraser，最低 tier）→ 计划最前；
+/// * A7/A2（Surgeon）→ 第一条 Surgeon 任务之前（与历史执行顺序"Surgeon 段里 A7 第一"
+///   的近似；`native_run` 按计划顺序执行，而不是旧引擎的 tier 分桶）。
+///
+/// **"后插入者更靠前"**：连续对同一个 tier 调用时，最后插入的任务排在同段最前——
+/// `inject_hygiene_tasks` 正是利用这一点让 A2 排在 A7 之前。
+///
+/// **为什么不会破坏并行分段**：插入点之前的所有任务 tier 都 < 新任务、之后都 >=，
+/// 因此插入只是在该边界新增一个元素，**不会把任何一对"相邻且同 tier"的原有任务拆开**
+/// （`run_native` 的并行分段只依赖"相邻 tier 是否相同"）。
+fn insert_task_by_tier(plan: &mut Vec<String>, name: &str, tier: Tier) {
+    let position = plan
+        .iter()
+        .position(|existing| match crate::task_registry::tier_of(existing) {
+            Some(existing_tier) => existing_tier >= tier,
+            // 未登记的名字不应出现在计划里（`native_for` 的契约检查会报错）；
+            // 真出现时保守地停在它前面，不把新任务插到"更晚"的位置。
+            None => true,
+        })
+        .unwrap_or(plan.len());
+    plan.insert(position, name.to_string());
+}
+
+/// 计划是否按 tier 非降序（仅单测用：用一个**有序的合成计划**验证插入位置；
+/// 真实 `Scheduler::plan` 不保证全局有序，见 [`insert_task_by_tier`] 的说明）。
+#[cfg(test)]
+fn plan_is_tier_ordered(plan: &[String]) -> bool {
+    plan.windows(2).all(|pair| match (
+        crate::task_registry::tier_of(&pair[0]),
+        crate::task_registry::tier_of(&pair[1]),
+    ) {
+        (Some(a), Some(b)) => a <= b,
+        _ => true,
+    })
 }
 
 const EARLY_NATIVES: [&str; 10] = [
@@ -1551,6 +1667,12 @@ fn native_for(
         ));
     }
     if switches.textures {
+        // **纹理卫生三任务**（A1/A2/A7）：任务名不来自 `conversion_maps`，
+        // 由 `inject_hygiene_tasks` 注入计划；派发仍必须走本函数（`native_placements`
+        // 的 Early/Late 判定与 report.native_names 都只认这里返回的实现）。
+        if let Some((decl, run)) = crate::natives::hygiene::lookup(name) {
+            return Some(("hygiene", decl, run));
+        }
         if name == "generate_potion_lingering" {
             return Some((
                 "potion_lingering_gen",
@@ -2012,6 +2134,97 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
             .expect("encode png");
         buf
+    }
+
+    /// 把 RgbaImage 编码成 PNG 字节（纹理卫生夹具用）。
+    fn rgba_png(img: &image::RgbaImage) -> Vec<u8> {
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgba8(img.clone())
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .expect("encode png");
+        buf
+    }
+
+    /// 编码一张 RGB JPEG（JPEG 不支持 alpha，先转 RGB8）。
+    fn jpeg(size: (u32, u32), color: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(size.0, size.1, image::Rgb(color));
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut buf),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("encode jpeg");
+        buf
+    }
+
+    /// **纹理卫生夹具**：四张图分别覆盖三个任务的输入/反例。
+    ///
+    /// * `textures/item/normal.png` —— 正常 PNG（A1 必须逐字节不动）；
+    /// * `textures/item/mislabeled.png` —— JPEG 内容 + `.png` 名（A1 目标，1.6–1.8 遗留）；
+    /// * `textures/item/fake.png` —— 左半 alpha=2 假背景（A2 目标；8×16=128px 触边）；
+    /// * `textures/gui/bad_layer.png` —— 一个 `[10,20,30,0]` 像素（A7 Rule 1 目标）。
+    fn fixture_hygiene(path: &Path, format: u32) {
+        let f = std::fs::File::create(path).expect("create hygiene fixture");
+        let mut zip = zip::ZipWriter::new(f);
+        let opts = zip::write::FileOptions::default();
+        zip.start_file("pack.mcmeta", opts).expect("start");
+        zip.write_all(
+            format!(
+                r#"{{"pack":{{"pack_format":{format},"description":"hygiene fixture"}}}}"#
+            )
+            .as_bytes(),
+        )
+        .expect("write");
+        let mut add = |name: &str, body: Vec<u8>| {
+            zip.start_file(name, opts).expect("start");
+            zip.write_all(&body).expect("write");
+        };
+        add("assets/minecraft/textures/item/normal.png", png((16, 16)));
+        add(
+            "assets/minecraft/textures/item/mislabeled.png",
+            jpeg((8, 8), [200, 30, 30]),
+        );
+        add(
+            "assets/minecraft/textures/item/fake.png",
+            rgba_png(&image::RgbaImage::from_fn(16, 16, |x, _| {
+                if x < 8 {
+                    image::Rgba([200, 100, 50, 2])
+                } else {
+                    image::Rgba([0, 255, 0, 255])
+                }
+            })),
+        );
+        add(
+            "assets/minecraft/textures/gui/bad_layer.png",
+            rgba_png(&{
+                let mut img =
+                    image::RgbaImage::from_pixel(4, 4, image::Rgba([50, 60, 70, 255]));
+                img.put_pixel(0, 0, image::Rgba([10, 20, 30, 0]));
+                img
+            }),
+        );
+        zip.finish().expect("finish");
+    }
+
+    /// 读 zip 某个条目的**原始字节**（不存在返回 `None`）。
+    fn zip_entry_bytes(zip_path: &Path, name: &str) -> Option<Vec<u8>> {
+        use std::io::Read as _;
+        let f = std::fs::File::open(zip_path).expect("open zip");
+        let mut ar = zip::ZipArchive::new(f).expect("zip");
+        let mut entry = ar.by_name(name).ok()?;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).expect("read entry");
+        Some(buf)
+    }
+
+    /// 从产物 zip 里解一张 PNG（断言产物内容用）。
+    fn decode_zip_png(zip_path: &Path, name: &str) -> image::RgbaImage {
+        let bytes = zip_entry_bytes(zip_path, name)
+            .unwrap_or_else(|| panic!("产物缺少 `{name}`"));
+        image::load_from_memory(&bytes)
+            .unwrap_or_else(|e| panic!("产物 `{name}` 不是可解码图片：{e}"))
+            .to_rgba8()
     }
 
     /// 夹具刻意带上几个会被真实任务处理的结构（mcpatcher 目录、font 目录、
@@ -2543,6 +2756,264 @@ mod tests {
         })
         .expect("run_native with delete_shaders");
         (out, report)
+    }
+
+    /// **纹理卫生：注入条件与顺序的纯函数契约**。
+    ///
+    /// 这是本组唯一不跑整条管线的用例：端到端用例只能看到"产物变没变"，看不到
+    /// "A2 是否在 34→55 这条边也被注入但恰好没命中"这类条件错误。这里直接对
+    /// [`inject_hygiene_tasks`] 的判定与 `insert_task_by_tier` 的插入位置下断言。
+    #[test]
+    fn hygiene_injection_conditions_and_order_are_pinned() {
+        let base = ["rename_blocks_items", "generate_boat", "fix_clock_compass"];
+        let plan_for = |opts: &MixedRunOptions| -> Vec<String> {
+            let mut plan: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+            inject_hygiene_tasks(&mut plan, opts);
+            assert!(
+                plan_is_tier_ordered(&plan),
+                "注入后计划必须 tier 非降序（并行分段依赖它）：{plan:?}"
+            );
+            plan
+        };
+        let opts_with = |source: u32, target: u32, fix_alpha: bool| MixedRunOptions {
+            source_version: source,
+            target_version: target,
+            fix_alpha_layers: fix_alpha,
+            native: NativeSwitches::all(),
+            ..MixedRunOptions::default()
+        };
+
+        // 默认（34→55，fix_alpha 关）：只注入 A1，且它在计划最前（Eraser 最低 tier）。
+        assert_eq!(
+            plan_for(&opts_with(34, 55, false)),
+            vec![
+                "fix_mislabeled_textures",
+                "rename_blocks_items",
+                "generate_boat",
+                "fix_clock_compass",
+            ],
+            "默认只应注入 A1；A1 必须在计划最前"
+        );
+
+        // fix_alpha=true：A7 注入到 Surgeon 段最前（历史实现里它也是 Surgeon 第一项）。
+        assert_eq!(
+            plan_for(&opts_with(34, 55, true)),
+            vec![
+                "fix_mislabeled_textures",
+                "rename_blocks_items",
+                "generate_boat",
+                "fix_alpha_layers_in_textures",
+                "fix_clock_compass",
+            ],
+            "A7 必须插在 Surgeon 段最前"
+        );
+
+        // 源 1 → 目标 97：A2 也注入；头插顺序 ⇒ A2 排在 A7 之前（先清背景，再修图层）。
+        assert_eq!(
+            plan_for(&opts_with(1, 97, true)),
+            vec![
+                "fix_mislabeled_textures",
+                "rename_blocks_items",
+                "generate_boat",
+                "fix_item_transparency",
+                "fix_alpha_layers_in_textures",
+                "fix_clock_compass",
+            ],
+            "A2 必须插在 A7 之前（同一 Surgeon 段内）"
+        );
+
+        // 不满足 1→2+ 的两条边界：1→1（目标不足）与 15→34（源不是 1.6–1.8）。
+        for (source, target) in [(1u32, 1u32), (15, 34)] {
+            let plan = plan_for(&opts_with(source, target, false));
+            assert!(
+                !plan.iter().any(|n| n == "fix_item_transparency"),
+                "{source}→{target} 不该注入 A2：{plan:?}"
+            );
+        }
+
+        // `NativeSwitches` 关闭 textures：一个都不注入（旧管线等价，也避免派发契约失败）。
+        let mut plan: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+        inject_hygiene_tasks(
+            &mut plan,
+            &MixedRunOptions {
+                native: NativeSwitches::none(),
+                ..MixedRunOptions::default()
+            },
+        );
+        assert_eq!(
+            plan,
+            base.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            "textures 模块关闭时不该注入任何纹理卫生任务"
+        );
+    }
+
+    /// **A1 始终注入、最先执行，且不改变正常 PNG 的字节。**
+    ///
+    /// 这是"默认产物不变"这条性质在本组的核心闸门：A1 是唯一**始终**注入的任务，
+    /// 如果它对正常 PNG 有任何重写，所有既有产物的字节都会变（包括 pin/指纹测试）。
+    #[test]
+    fn hygiene_a1_runs_always_first_and_keeps_real_png_bytes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let input = tmp.path().join("fixture_hygiene.zip");
+        fixture_hygiene(&input, 34);
+        let normal_before = zip_entry_bytes(&input, "assets/minecraft/textures/item/normal.png")
+            .expect("input normal.png");
+        let fake_before = zip_entry_bytes(&input, "assets/minecraft/textures/item/fake.png")
+            .expect("input fake.png");
+
+        let (out, report) =
+            native_output_v2(&input, tmp.path(), 55, 34, NativeSwitches::all(), false, "hyg_a1");
+
+        // A1 是 Eraser 级、注入在计划最前 ⇒ report 的执行顺序里它是第一个。
+        assert_eq!(
+            report.native_names.first().map(String::as_str),
+            Some("fix_mislabeled_textures"),
+            "A1 必须最先执行：{:?}",
+            report.native_names
+        );
+        // 34→55 不满足 A2 的条件；fix_alpha 默认关 ⇒ A7 不注入。
+        assert!(
+            !report.native_names.iter().any(|n| n == "fix_item_transparency"),
+            "34→55 不该注入 A2：{:?}",
+            report.native_names
+        );
+        assert!(
+            !report
+                .native_names
+                .iter()
+                .any(|n| n == "fix_alpha_layers_in_textures"),
+            "默认开关下不该注入 A7：{:?}",
+            report.native_names
+        );
+
+        let normal_after = zip_entry_bytes(&out, "assets/minecraft/textures/item/normal.png")
+            .expect("output normal.png");
+        assert_eq!(normal_after, normal_before, "正常 PNG 必须逐字节不动");
+        let fake_after = zip_entry_bytes(&out, "assets/minecraft/textures/item/fake.png")
+            .expect("output fake.png");
+        assert_eq!(fake_after, fake_before, "A2 未注入时假透明图必须原样保留");
+
+        let mislabeled = zip_entry_bytes(&out, "assets/minecraft/textures/item/mislabeled.png")
+            .expect("output mislabeled.png");
+        assert_eq!(
+            &mislabeled[..4],
+            &[0x89, 0x50, 0x4E, 0x47],
+            "JPEG 伪装的 .png 必须被 A1 重编码为真 PNG"
+        );
+        // 重编码结果还必须能被正常解码（不是"只改了 magic"）。
+        let decoded = image::load_from_memory(&mislabeled)
+            .expect("A1 产物必须可解码")
+            .to_rgba8();
+        assert_eq!(decoded.dimensions(), (8, 8));
+    }
+
+    /// **A7（图层修复）：用户开关打开时计划 +1、任务执行、产物字节确实变化；
+    /// 关闭时产物逐字节不变。**（开关以前是空的：只有 bool 透传，没有任何任务。）
+    #[test]
+    fn hygiene_a7_layer_fix_is_injected_by_user_switch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let input = tmp.path().join("fixture_hygiene.zip");
+        fixture_hygiene(&input, 34);
+        let bad_before = zip_entry_bytes(&input, "assets/minecraft/textures/gui/bad_layer.png")
+            .expect("input bad_layer.png");
+
+        let run = |fix_alpha_layers: bool, tag: &str| {
+            let opts = MixedRunOptions {
+                source_version: 34,
+                target_version: 55,
+                fix_alpha_layers,
+                native: NativeSwitches::all(),
+                ..MixedRunOptions::default()
+            };
+            native_output_v2_opts(&input, tmp.path(), opts, tag)
+        };
+        let (off_zip, off_report) = run(false, "hyg_a7_off");
+        let (on_zip, on_report) = run(true, "hyg_a7_on");
+
+        assert!(
+            !off_report
+                .native_names
+                .iter()
+                .any(|n| n == "fix_alpha_layers_in_textures")
+        );
+        assert!(
+            on_report
+                .native_names
+                .iter()
+                .any(|n| n == "fix_alpha_layers_in_textures"),
+            "开关打开后必须派发 A7：{:?}",
+            on_report.native_names
+        );
+        assert_eq!(
+            on_report.plan_len,
+            off_report.plan_len + 1,
+            "开关打开只应多出 A7 这一个任务"
+        );
+
+        // 关闭：A1 不动正常 PNG、A7 没跑 ⇒ 与输入逐字节相同。
+        let off_png = zip_entry_bytes(&off_zip, "assets/minecraft/textures/gui/bad_layer.png")
+            .expect("off bad_layer");
+        assert_eq!(off_png, bad_before, "A7 关闭时产物必须逐字节不变");
+
+        // 打开：Rule 1 把 alpha=0 但 RGB≠0 的像素 RGB 清 0。
+        let on_png = zip_entry_bytes(&on_zip, "assets/minecraft/textures/gui/bad_layer.png")
+            .expect("on bad_layer");
+        assert_ne!(on_png, off_png, "A7 开启后该图必须被重写");
+        let img = decode_zip_png(&on_zip, "assets/minecraft/textures/gui/bad_layer.png");
+        assert_eq!(
+            *img.get_pixel(0, 0),
+            image::Rgba([0, 0, 0, 0]),
+            "Rule 1：全透明像素的 RGB 必须被清 0"
+        );
+    }
+
+    /// **A2：只在源 ≤1、目标 ≥2 的版本边注入**（1.6–1.8 → 1.9+），并真的清掉假透明背景。
+    #[test]
+    fn hygiene_a2_transparency_is_injected_only_for_legacy_sources() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // ① 1 → 97：命中"1.6–1.8 升 1.9+"的语义 ⇒ 注入 A2，且假背景被清。
+        let legacy = tmp.path().join("fixture_hygiene_legacy.zip");
+        fixture_hygiene(&legacy, 1);
+        let (out, report) =
+            native_output_v2(&legacy, tmp.path(), 97, 1, NativeSwitches::all(), false, "hyg_a2_legacy");
+        assert!(
+            report.native_names.iter().any(|n| n == "fix_item_transparency"),
+            "1→97 必须注入 A2：{:?}",
+            report.native_names
+        );
+        let fake = decode_zip_png(&out, "assets/minecraft/textures/item/fake.png");
+        for y in 0..16 {
+            for x in 0..8 {
+                assert_eq!(
+                    *fake.get_pixel(x, y),
+                    image::Rgba([0, 0, 0, 0]),
+                    "假透明像素 ({x},{y}) 必须被清成真透明"
+                );
+            }
+        }
+
+        // ② 34 → 55：不是旧包升级边 ⇒ 不注入 A2（正常包不受影响）。
+        let modern = tmp.path().join("fixture_hygiene_modern.zip");
+        fixture_hygiene(&modern, 34);
+        let (_out, report) =
+            native_output_v2(&modern, tmp.path(), 55, 34, NativeSwitches::all(), false, "hyg_a2_modern");
+        assert!(
+            !report.native_names.iter().any(|n| n == "fix_item_transparency"),
+            "34→55 不该注入 A2：{:?}",
+            report.native_names
+        );
+
+        // ③ 1 → 1：目标 <2 ⇒ 不注入 A2。
+        let same = tmp.path().join("fixture_hygiene_same.zip");
+        fixture_hygiene(&same, 1);
+        let (_out, report) =
+            native_output_v2(&same, tmp.path(), 1, 1, NativeSwitches::all(), false, "hyg_a2_same");
+        assert!(
+            !report.native_names.iter().any(|n| n == "fix_item_transparency"),
+            "1→1 不该注入 A2：{:?}",
+            report.native_names
+        );
     }
 
     /// **`delete_shaders`：开启时两棵 shaders 树消失，其余条目逐条不变。**

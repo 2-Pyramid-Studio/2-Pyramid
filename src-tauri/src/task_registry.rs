@@ -23,7 +23,8 @@ pub struct TaskMeta {
     pub tier: Tier,
 }
 
-/// 88 个任务的元数据，**顺序与旧注册表逐字一致**（勿排序、勿插入）。
+/// 93 个任务的元数据，**顺序与旧注册表逐字一致**（勿排序、勿插入；本版的
+/// 三个新任务追加在表尾，见文件末尾注释）。
 pub const REGISTRY: &[TaskMeta] = &[
     TaskMeta { name: "rename_blocks_items", task_type: TaskType::Exclusive, tier: Tier::Eraser },
     TaskMeta { name: "convert_animated_textures", task_type: TaskType::Exclusive, tier: Tier::Eraser },
@@ -134,17 +135,42 @@ pub const REGISTRY: &[TaskMeta] = &[
     // 类型标 `Exclusive` 与它的 `decl()`（`exclusive(true)`）一致——它要读别的任务
     // 可能刚写过的 `assets/minecraft/items/`，声明独占换确定性。
     TaskMeta { name: "generate_cit_item_definitions", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
+    // ════════════════════════════════════════════════════════════════════
+    // **纹理卫生三个任务**（格式识别 / 假透明背景 / 图层修复）。
+    //
+    // 它们**不属于**旧闭包注册表（A1/A2 是新增能力；A7 的历史实现
+    // `converters/textures/alpha_layers.rs` 从未原生化、也从未真正进入过生产注册表，
+    // 见本文件末尾 `AUXILIARY` 的历史）。仍必须进这张表，因为：
+    // * `native_run` 的**派发契约**要求计划里每个名字都能 `native_for` 解析，而
+    //   `native_placements` / 并行分段都要 `tier_of` 取阶段；
+    // * 少了阶段，`tier_of` 返回 `None` → 驱动把它当 Eraser 兜底（`unwrap_or`），
+    //   静默换侧。
+    //
+    // **为什么追加在表尾而不是按 tier 插进对应段**：这张表的顺序语义是"旧注册表顺序"，
+    // 三个任务在旧注册表里不存在，插进中段会破坏"与旧注册表逐字一致"这条可审计性质；
+    // 它们实际的**执行顺序由 `native_run::inject_hygiene_tasks` 按 tier 注入决定**，
+    // 与本表顺序无关（`plan()` 也不从本表选名字）。表尾追加 + 这段注释是唯一不破坏
+    // 原不变量的放法。
+    TaskMeta { name: "fix_mislabeled_textures", task_type: TaskType::Exclusive, tier: Tier::Eraser },
+    TaskMeta { name: "fix_item_transparency", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
+    // A7 从 `AUXILIARY` 移到本表：以前它只是"阶段查询兜底"的一行元数据，没有任何实现；
+    // 现在有了原生实现与注入点，就和其他任务一样以本表为唯一事实来源。
+    TaskMeta { name: "fix_alpha_layers_in_textures", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
 ];
 
 /// **不在** [`REGISTRY`] 里、但会出现在计划中的任务的阶段。
 ///
-/// 它们由别处注册（`bedrock_convert::register_tasks`；旧闭包注册表已删除，
-/// `converters::{shaders::java, textures::alpha_layers}`），因此不在上面那张表里；
-/// 但 `native_placements` 仍需要它们的阶段来决定放置侧（§9.52/§9.76）。
+/// 它们由别处注册（`bedrock_convert::register_tasks`；旧闭包注册表已删除），
+/// 因此不在上面那张表里；但 `native_placements` 仍需要它们的阶段来决定放置侧
+/// （§9.52/§9.76）。
 /// **注意**：这张表只提供**查询兜底**，不改变任何注册条件（尤其不改变 `adapt_shaders` 开关）。
+///
+/// **历史**：这里曾有 `fix_alpha_layers_in_textures`——那时的"图层修复"开关只有
+/// bool 透传、没有任务实现，本表只是给一个不存在于 `plan()` 里的名字留的阶段查询。
+/// 本版把它原生化并接进 `REGISTRY`（见表尾），于是它从这张兜底表移除：
+/// 一个任务有实现之后，它的阶段必须来自唯一事实来源，而不是辅助表。
 pub const AUXILIARY: &[TaskMeta] = &[
     TaskMeta { name: "adapt_java_shaders", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
-    TaskMeta { name: "fix_alpha_layers_in_textures", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
     TaskMeta { name: "bedrock_java_to_bedrock", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
     TaskMeta { name: "bedrock_bedrock_to_java", task_type: TaskType::Exclusive, tier: Tier::Surgeon },
 ];
@@ -168,7 +194,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// **表形状守卫**（§9.125）：90 项、无重名，且三个阶段/三种并发类型都有实例。
+    /// **表形状守卫**（§9.125）：93 项、无重名，且三个阶段/三种并发类型都有实例。
     ///
     /// 为什么钉住这个数：这张表是「驱动取阶段的数据源」，**少一项就会让某个原生任务
     /// 在 `native_placements` 里查不到阶段**，从而静默换到另一侧 ⇒ 产物分叉（§9.124 的风险）。
@@ -186,11 +212,19 @@ mod tests {
     /// （`item_definition` / `custom_model_data` 全库 0 处命中），是**新能力**；
     /// 它们仍必须进这张表，因为 `native_run` 只从这里取放置侧
     /// （少了它，`native_for` 的派发永远不会被调用）。
+    ///
+    /// **90 → 93 的理由（2026-10，纹理卫生三任务）**：新增/转正三个任务
+    /// （表尾，理由写在表内那段注释里）：
+    ///
+    /// * `fix_mislabeled_textures`（Eraser / Exclusive）—— 内容是 JPEG 的 `.png` 重编码；
+    /// * `fix_item_transparency`（Surgeon / Exclusive）—— 旧包假透明背景清理；
+    /// * `fix_alpha_layers_in_textures`（Surgeon / Exclusive）—— 历史「图层修复」原生化，
+    ///   从 [`AUXILIARY`] 转正。
     #[test]
     fn registry_shape_is_pinned() {
-        assert_eq!(REGISTRY.len(), 90, "元数据表项数必须与旧注册表一致");
+        assert_eq!(REGISTRY.len(), 93, "元数据表项数必须与旧注册表 + 纹理卫生三任务追加一致");
         let names: BTreeSet<&str> = REGISTRY.iter().map(|m| m.name).collect();
-        assert_eq!(names.len(), 90, "出现重名：表里每个任务名必须唯一");
+        assert_eq!(names.len(), 93, "出现重名：表里每个任务名必须唯一");
 
         // 三种阶段都必须有实例，否则「阶段」这个维度事实上没被覆盖
         for tier in [Tier::Eraser, Tier::Architect, Tier::Surgeon] {
@@ -211,7 +245,7 @@ mod tests {
             assert_eq!(lookup(m.name).map(|x| x.name), Some(m.name));
             assert_eq!(tier_of(m.name), Some(m.tier));
         }
-        // 辅助表（Bedrock 两项 + 两个开关任务）也必须答得出来
+        // 辅助表（Bedrock 两项 + 着色器适配）也必须答得出来
         for m in AUXILIARY {
             assert_eq!(tier_of(m.name), Some(m.tier), "辅助表项 {} 查不到", m.name);
         }
