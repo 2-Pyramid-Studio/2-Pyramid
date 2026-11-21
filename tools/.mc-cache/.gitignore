@@ -1,0 +1,5 @@
+# 本地缓存：Mojang 官方客户端 jar、版本清单与 version json。
+# 体积数百 MB、且是 Mojang 的原始分发物，**禁止入库**；只有生成结果
+# （legacy-defaults.json / legacy-defaults.fixtures.json）进版本库。
+*
+!.gitignore
