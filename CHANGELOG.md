@@ -2,6 +2,11 @@
 
 ### Added
 
+- **转换期纹理自检（默认自动，无需开关）**：管线新增两个原生任务，只改 PNG 字节、不动其它条目。
+  - `fix_mislabeled_textures`（Eraser，始终执行）：内容是 JPEG（magic `FF D8 FF`）却命名为 `.png` 的贴图，解码后重编码为真 PNG；正常 PNG 逐字节不变。真实包实测扫描 1068 张耗时 99.4ms（debug，约占整包 1.2%）、0 张误改；合成样例 634B 的 JPEG 伪装图 → 144B 真 PNG，像素一致。
+  - `fix_item_transparency`（Surgeon；源 `pack_format` ≤1 且目标 ≥2 时注入）：清理「大面积、触边、alpha=1–2」的假透明背景（alpha 置 0），避免 1.9+ 物品侧面沿假矩形生成。合成样例 alpha 直方图 `{2:128, 255:128} → {0:128, 255:128}`，不透明区逐像素不变；自称 `format=1` 的真实 1.20.1 包（OptiFine 内容）转 46 实测改 29/249 张。
+- **输出形态：文件夹输出**（设置 → 输出形态 / CLI `--folder`）：Java 目标可直接产出解压目录（目录名沿用输出命名模板 = 同名 zip 去 `.zip`），`pack.mcmeta` 与 `2pyr-gen.json` 一并保留；Bedrock 目标（`.mcpack`）明确报错、不静默降级。文件夹模式**不覆盖已有目录**（同名目录报错，避免误删用户数据）。实测与 zip 产物条目集合完全一致、除 `2pyr-gen.json` 时间戳外逐字节相同。
+- **CLI `--versions`**：列出 27 个目标标签（26 Java 区间 + Bedrock）与对应 `pack_format`（TAB 分隔，可直接作为 `--to` 的取值）。
 - **品牌资产目录 `brand/`（Precision Geometry）成为唯一矢量源**：维护者采纳《2-Pyramid 品牌视觉方向提案》（提案 PDF 与评审记录一并归档在 `brand/`）。包含主标识（512，细线）、深色白版、小尺寸加粗 favicon、16–24px 专用 micro 光学版、横向组合（**文字已转曲**，无字体依赖，含白色版）。资产使用分档：16–24 micro / ≤48 favicon / ≥64 mark；应用内与网页 PNG 由 `tools/generate-logos.mjs` 生成（`npm run logos`），OS 图标由 `tools/generate-icons.mjs` 生成（`npm run icons`），均为幂等、带自检的生成物，不手改。
   - README 顶部改为 `<picture>`：`prefers-color-scheme` 亮/暗自动切 `logo-256.png` / `logo-256-white.png`（GitHub 深色主题下不再看不见）。
   - 旧 `logo-white.png` 实际是白底不透明（`corner alpha=255`）已修正为白线 + 透明底；`logo-source.png → tauri icon` 的旧链路废弃。
@@ -16,6 +21,7 @@
 
 ### Changed
 
+- **ZIP 输出使用最高 DEFLATE 级别（9）**：`write_zip` 对 Deflated 条目设置 `compression_level(9)`；Stored 白名单与「已压缩条目原样透传」语义不变。同编码器同内容实测 260,500 B 语料 41,311 → 39,730 B（−1,581 B / −3.83%）；极小/高熵数据在 9 级下可能略大（4.5KB 混合树 +26B），收益主要在多文本/大包。产物压缩字节因此与旧版本不同（条目内容逐条一致），`--pack-diff --strict` 会如实报压缩字节差异。
 - **品牌视觉落地：应用内 / 安装器 / OS 图标 / README 全部换成 Precision Geometry 资产**：
   - **OS 图标链重建**：白底圆角板 + 尺寸分档 artwork（16–24 用 micro、32–48 用 favicon、≥64 用 mark）。旧 `icon.ico` 是旧稿放大后的不透明白方块，16px 实测只有 **2** 个深色像素（近乎空白）；新 ICO 同口径 **35**、24px 15→**76**、32px 49→**90**、48px 146→**193**。MSIX 的 `Wide310x150Logo.png` / `SplashScreen.png` 还是更早的过期稿（透明底细线），已按同一设计重生成；`installer-app` 图标与主 `icon.ico` 同字节。
   - **应用内落点重算**：HomePage 品牌块按新 mark 墨迹比例 71.5%（旧 45%）重算盒子与负 margin —— 44px 盒内可见约 31.5px，视觉大小与原 64px 旧素材一致；加载页 `boot-mark` 132→85px（视觉约 61px 不变，FLIP 飞行按 DOM 自然适配）；OOBE 顶部标识用小尺寸加粗版并改为主题墨色（主标识保持单色）；版本弹窗改用 mark（`logo-192.png`）并在深色下反相。
@@ -23,6 +29,10 @@
 - **OptiFine CIT 转换默认关闭（止血，待实机验证）**（`convert_cit`：true → false；GUI 转换页、配置缺省、CLI、驱动默认值四处同步）：用户报告 1.20.1 布吉岛包转 1.21.9–1.21.10 后弓与钻石剑为紫黑格。2.203.0 已修掉一个**确定**的 codec 错误（`enchantments` 裸字符串 → 数组；修复前真实客户端 codec 报 `Not a json array`，与黑紫症状吻合），但修复后用户仍报告黑紫。离线复核（真实 1.21.5 / 1.21.10 客户端 codec + 从 jar 读取 42 个真实附魔 id 构造 RegistryOps）显示修复后的数组形状**解析通过**，codec 层不再是可复现的失败点；但本环境没有实机渲染验证，该报告原因尚未复现，故按用户要求先默认关——这是**产品决策**，不是 codec 硬约束。关闭只跳过转换，`optifine/cit/**` 与 `mcpatcher/cit/**` 源文件原样保留（OptiFine 客户端仍会读取）；`delete_cit` 语义不变且仍优先于转换。CLI：`--no-cit` 保留为兼容参数（默认关之后不再改变行为），显式开启改用 `--cit`。
 - **数字 `CustomModelData` 写法复核（结论：现行写法正确，无需改动）**：`condition(property=minecraft:has_component)` → `range_dispatch(property=minecraft:custom_model_data)` 在真实 **1.21.5 / 1.21.10** 客户端 codec 下解析 **OK**；1.21.10 原版 `assets/minecraft/items/wolf_armor.json` / `compass.json` 同样使用 `property: minecraft:has_component`，证明该 property 合法。交接里「`has_component` 不是合法 predicate」的判断源于把一个 condition **property** 当成了 data component **predicate**（对照用例 C 的 JSON 本身写错了），不构成对现行方案的否定。
 - **附魔条件的离线报错已定性**：`Can't access registry ... minecraft:enchantment` 是离线校验器用 `JsonOps`、未加载动态注册表的局限；补上从 1.21.10 jar 读出的 42 个真实附魔 id（RegistryOps）后，修复后的 bow / diamond_sword / golden_axe 定义全部解析通过（负对照：不存在的附魔 id 立即失败）。修复前的裸字符串则无论哪种路径都报 `Not a json array`——那才是与用户黑紫吻合的真错误。剩余风险只在**实机渲染语义**，故 CIT 转换默认关闭等待实机确认。
+
+### Fixed
+
+- **「图层修复」开关从空开关变为真实实现**（`fix_alpha_layers_in_textures`）：此前只有 bool 透传、没有任何任务实现或派发；本版恢复历史 9 条像素规则（zero-alpha RGB、半透明亮度/饱和度、不透明边缘邻域修正等），仅在用户开启开关时注入计划，默认关 → 默认产物不变。开关打开时按历史规则改写 PNG 像素；关闭时产物逐字节不变（`native_run` e2e 双向钉住）。
 
 ## [2.203.0] - 2026-10-17（BUILD 22030）
 

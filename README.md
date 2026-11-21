@@ -51,6 +51,8 @@
 - **批量处理** — 一次拖入多个资源包；**性能档位**（设置里二选一）：**平衡**用一半核心（下限 2、上限 8）并同时转换 2 个包，机器可继续正常使用；**性能**吃满核心（上限 32）并同时最多 6 个包（可用内存低于 1500 MB 时自动降为 1 个包）。设置项下方实时显示本机解析结果（核数 · 线程预算 · 并发包数）
 - **目录规整防呆** — 自动把嵌套的 `pack.mcmeta` 提升到压缩包根目录；`pack.mcmeta.txt` 之类多扩展名文件只要内容是合法 mcmeta（能解析出 format 数值）也会统一改名为 `pack.mcmeta`
 - **动态贴图转换** — 老版 `{"animation": {}}` 的 `.png.mcmeta` 自动按贴图尺寸推导帧数，改写为高版本 `frametime` + `interpolate` 格式
+- **纹理自检** — 转换时自动修复两类常见坏图：**内容是 JPEG 却命名为 `.png`** 的贴图会被解码并重编码为真 PNG（正常 PNG 逐字节不动）；1.6–1.8 旧包升 1.9+ 时清理**大面积、触边、alpha=1–2 的假透明背景**，避免物品侧面沿假矩形生成。转换页「图层修复」开关也获得真实实现（恢复历史 9 条像素规则；默认关，开启才改写像素）。
+- **输出形态可选** — 转换产物可保存为 **ZIP 压缩包**或**解压文件夹**（设置 → 输出形态；CLI `--folder`）。目录名沿用输出命名模板（= 同名 zip 去 `.zip`），`pack.mcmeta` 与 `2pyr-gen.json` 一并保留；**同名目录已存在时直接报错、不覆盖**；Bedrock 目标不支持文件夹输出。ZIP 输出使用最高 DEFLATE 级别（文本类产物体积更小）。
 - **1.21.4+ 物品定义与 OptiFine CIT** — 旧包 `models/item/*.json` 里的 `overrides` + `CustomModelData` 会迁成 `assets/<ns>/items/<name>.json` 的原生物品定义；OptiFine CIT（`optifine/cit/**`、`mcpatcher/cit/**`）一并迁移，支持 CMD、附魔名 + 等级（目标 ≥ 1.21.5）、`hand=` 双手上下文与弓的多状态贴图；无法精确表达的条件如实跳过并记录。**CIT 转换默认关闭**：用户实机报告过弓 / 钻石剑紫黑格，离线 codec 复核显示修复后的附魔条件形状在补齐注册表后可以通过、但实机渲染未验证、该报告原因尚未复现，所以先默认不生成；需要的用户在转换页手动打开并先在游戏内验证。
 - **产物可追溯（2pyr-gen）** — **Java 版**资源包转换产物根目录会写入一份 `2pyr-gen.json`（Bedrock 目标不写）：记录源 / 目标 `pack_format`、程序版本与 BUILD、本次转换开关与 UTC 时间；**不含**路径、用户名等个人信息，Minecraft 客户端不读取该文件。默认开启，转换页可关闭（设置随配置保存）；EULA 与隐私声明已同步披露。
 - **输出命名模板** — `[Ver]` / `[Name]` / `[Time]` / `[Date]` 占位符自由组合，再转换时自动替换名称中的旧版本前缀
@@ -71,6 +73,9 @@
 - **Bedrock 双向转换为实验性**：j2b / b2j 未完成且存在严重问题，仅用于测试；选中该目标会弹出警示（`.mcpack` 可直接作为 b2j 的输入）。
 - **OptiFine CIT 转换默认关闭（待实机验证）**：用户实机报告过 1.20.1 → 1.21.9–1.21.10 转换后弓 / 钻石剑紫黑；离线 codec 复核显示修复后的附魔条件形状在补齐附魔注册表后可以通过，但本工具没有实机渲染验证、该报告原因尚未复现，故先默认不生成。开启前请自行在游戏内验证；关闭时 CIT 源文件原样保留，OptiFine 客户端仍会读取。
 - **Java 目标的产物根目录会多出一个 `2pyr-gen.json`**：它是转换参数记录（可追溯 / 排障用），不是原包内容；Minecraft 客户端不会读取它，可在转换页关闭写入（Bedrock 目标不写）。
+- **纹理自检是默认自动行为**：假透明背景清理只在源包**自称** `pack_format` 为 1（1.6–1.8）且目标 ≥2 时触发，阈值保守（触边 + 面积 ≥max(64px, 5%) + 含 alpha 1/2）；若你的包只是把 `pack_format` 填错（内容其实是新版），转换前请先把版本号改对，否则少量 alpha 1–2 边缘可能被清成透明。
+- **文件夹输出不覆盖已有目录**：同名目录已存在时直接报错（不删除用户数据）；重复转换请先改名或换输出目录。Bedrock 目标（`.mcpack`）不支持文件夹输出。
+- **ZIP 压缩字节不是稳定指纹**：输出改用最高 DEFLATE 级别后，同一内容在不同版本产物里的 zip 压缩字节可能不同（条目内容逐条一致）；`--pack-diff --strict` 会按字节级报压缩差异，属预期行为。
 - **发行版默认只记录 Warn / Error 日志**：release 构建下 Info 级日志（含转换进度与 OKAY 明细）默认不写入日志文件；若需完整日志用于排查，请在**设置 → 开发者模式**中开启后再复现问题。
 - **更新检查会访问网络**：仅访问 GitHub 官方源（此前的第三方镜像已停止维护、已移除）；转换过程本身全程离线。
 - **Editor Mode / Foray 的 AI 功能会把内容发给第三方**：该功能使用**你自己填写的** OpenAI 兼容 endpoint 与密钥，你选择分析的贴图/文本会被发送到该 endpoint。默认关闭。
@@ -175,11 +180,12 @@ npm run 2pyr       # Tauri dev 模式（Rust 后端 + Vite 前端）
 
 ### 🧪 命令行工具（排查 / 压测 / 质量闸门）
 
-主程序支持三个无界面模式，全部**只读或独立运行**、不启动 GUI：
+主程序支持四个无界面模式，全部**只读或独立运行**、不启动 GUI：
 
 | 命令 | 作用 |
 |---|---|
-| `2-pyramid.exe --convert <包\|目录> [--to 26.3] [--out <目录>] [--report <报告.json>] [--fast] [--cit] [--no-gen-metadata]` | 跑**完整转换管线**并输出结构化报告：结构分析 + 纯转换/总时间（含 IO 分解）+ 逐任务耗时 + 体积变化。目录会递归处理其中所有 `.zip`/`.mcpack`。`--fast` 关闭 GUI sprite 手术（`run_gui_surgeon`），用于隔离"手术"那部分的耗时。CIT 转换默认关（`--cit` 打开）；产物元数据 `2pyr-gen.json` 默认写（`--no-gen-metadata` 关闭）。 |
+| `2-pyramid.exe --convert <包\|目录> [--to 26.3] [--out <目录>] [--report <报告.json>] [--folder] [--fast] [--cit] [--no-gen-metadata]` | 跑**完整转换管线**并输出结构化报告：结构分析 + 纯转换/总时间（含 IO 分解）+ 逐任务耗时 + 体积变化。目录会递归处理其中所有 `.zip`/`.mcpack`。`--fast` 关闭 GUI sprite 手术（`run_gui_surgeon`），用于隔离"手术"那部分的耗时。`--folder` 输出解压目录（仅 Java 目标；同名目录已存在会报错）。CIT 转换默认关（`--cit` 打开）；产物元数据 `2pyr-gen.json` 默认写（`--no-gen-metadata` 关闭）。 |
+| `2-pyramid.exe --versions` | 列出全部目标版本标签与 `pack_format`（TAB 分隔，格式 `spec<TAB>format<TAB>label`，前 2 行是 `#` 注释头；`spec` 可直接作为 `--to` 的值交给脚本）。 |
 | `2-pyramid.exe --analyze <包\|目录>` | 只读**结构分析**：官方分层（overlays）、`supported_formats` 区间、非标准版本折叠目录、一包多根，含每层文件数与覆盖计数。 |
 | `2-pyramid.exe --pack-diff <A> <B> [--strict] [--json <报告>]` | **质量闸门**：PNG 像素级、JSON 语义级、其余字节级比对；默认允许"像素相同仅编码不同"，`--strict` 要求字节一致。退出码 0/1，可用于提速改动的回归验证。 |
 
@@ -299,6 +305,8 @@ npm run build                                               # 前端构建
 - **Batch processing** — Multiple packs at once, with a **performance tier** (choose one in Settings): **Balanced** uses half the cores (min 2, max 8) and converts 2 packs at a time so the machine stays usable; **Performance** uses all cores (cap 32) and up to 6 packs at once (auto-reduced to 1 when available memory drops below 1500 MB). Settings show the resolved numbers for your machine (cores · thread budget · concurrent packs) below the option
 - **Directory normalization** — Nested `pack.mcmeta` is promoted to the zip root; `pack.mcmeta.txt`-style files are renamed to `pack.mcmeta` when they contain a valid `format` value
 - **Animated texture conversion** — Legacy `{"animation": {}}` mcmeta files are upgraded to explicit `frametime` + `interpolate` (frame count derived from texture dimensions)
+- **Texture self-healing** — Two common kinds of broken textures are fixed during conversion: a file whose **content is JPEG but whose name is `.png`** is decoded and re-encoded as a real PNG (genuine PNGs stay byte-identical); legacy 1.6–1.8 packs converted to 1.9+ get **large border-touching alpha 1–2 fake-transparency backgrounds** cleared so item sides are no longer generated along a fake rectangle. The conversion page's "Layer fix" switch also got its real implementation back (the historical 9 pixel rules; off by default, pixels only change when enabled).
+- **Selectable output format** — Converted output can be saved as a **ZIP archive** or an **extracted folder** (Settings → Output Format; CLI `--folder`). The folder name follows the output naming template (= the zip name without `.zip`) and keeps `pack.mcmeta` plus `2pyr-gen.json`; **an existing same-name directory is rejected, never overwritten**; Bedrock targets do not support folder output. ZIP output uses the highest DEFLATE level (smaller text-heavy artifacts).
 - **1.21.4+ item definitions and OptiFine CIT** — old `overrides` + `CustomModelData` in `models/item/*.json` become native item definitions under `assets/<ns>/items/<name>.json`; OptiFine CIT (`optifine/cit/**`, `mcpatcher/cit/**`) migrates too, covering CMD, enchantment names + levels (target ≥ 1.21.5), `hand=` display contexts and bow state textures; conditions that cannot be expressed exactly are skipped and reported. **CIT conversion is off by default**: a user measured purple-black bow / diamond-sword models; offline codec review shows the fixed enchantment-condition shape parses once the enchantment registry is supplied, but in-game rendering is unverified and that report is not reproduced yet, so the path is not generated by default. Enable it in the conversion page only after verifying in-game.
 - **Traceable output (2pyr-gen)** — **Java Edition** conversion output gets a `2pyr-gen.json` at the pack root (not written for Bedrock targets): source / target `pack_format`, app version and BUILD, the conversion switches, and a UTC timestamp. It contains **no** paths, user names or other personal data, and Minecraft clients do not read it. On by default; it can be turned off in the conversion page (the setting is persisted with the config), and the EULA and privacy notice disclose it.
 - **Output naming template** — `[Ver]` / `[Name]` / `[Time]` / `[Date]` placeholders; old version prefixes are replaced on re-conversion
@@ -319,6 +327,9 @@ npm run build                                               # 前端构建
 - **Bedrock conversion is experimental**: j2b / b2j are incomplete and known to be broken — testing only; selecting that target shows a warning (`.mcpack` is accepted directly as b2j input).
 - **OptiFine CIT conversion is off by default (pending in-game verification)**: a user measured purple-black bow / diamond-sword models after a 1.20.1 → 1.21.9–1.21.10 conversion; offline codec review shows the fixed enchantment-condition shape parses once the enchantment registry is supplied, but this tool has no in-game rendering verification and the cause of that report is not reproduced yet, so the path is not generated by default. Verify in-game before enabling; when off, the CIT source files stay as they are and OptiFine clients still read them.
 - **Java-target output pack roots gain a `2pyr-gen.json`**: a conversion-parameter record for traceability / support, not original pack content; Minecraft clients do not read it, and writing it can be turned off in the conversion page (Bedrock targets do not get the file).
+- **Texture self-healing runs automatically**: fake-background clearing only triggers when the source pack **claims** `pack_format` 1 (1.6–1.8) and the target is ≥2, with conservative thresholds (touches the border + area ≥max(64px, 5%) + contains alpha 1/2). If your pack only has a wrong `pack_format` (its content is actually modern), fix the version number before converting — otherwise a few alpha 1–2 edges may be cleared.
+- **Folder output never overwrites an existing directory**: a same-name directory is rejected instead of deleted; rename it or pick another output directory before re-converting. Bedrock targets (`.mcpack`) do not support folder output.
+- **ZIP bytes are not a stable fingerprint**: with the highest DEFLATE level the compressed bytes may differ between versions even though every entry's content is identical; `--pack-diff --strict` will report this as a byte-level difference — expected behaviour.
 - **Release builds log Warn / Error only**: Info-level logs (conversion progress and OKAY details) are not written in release builds; enable **Settings → Developer Mode** first if you need full logs for a bug report.
 - **Update checks reach the network**: official GitHub only (the former third-party mirror is retired and has been removed). Conversion itself is fully offline.
 - **Editor Mode / Foray AI sends content to a third party**: it uses the OpenAI-compatible endpoint and key **you provide**, and the textures/text you choose to analyze are sent there. Off by default.
@@ -423,11 +434,12 @@ The core is a hand-rolled **DTD Pipeline** driven by a **BFS Scheduler**, built 
 
 ### 🧪 Command-line tools (diagnostics / benchmarking / quality gate)
 
-The binary has three headless modes; all are **read-only or self-contained** and never start the GUI:
+The binary has four headless modes; all are **read-only or self-contained** and never start the GUI:
 
 | Command | Purpose |
 |---|---|
-| `2-pyramid.exe --convert <pack\|dir> [--to 26.3] [--out <dir>] [--report <report.json>] [--fast] [--cit] [--no-gen-metadata]` | Runs the **full conversion pipeline** and writes a structured report: structure analysis + pure/total timings (with the IO split) + per-task profile + size delta. A directory is walked recursively for every `.zip` / `.mcpack`. `--fast` turns off the GUI sprite surgery (`run_gui_surgeon`) to isolate its cost. CIT conversion is off by default (`--cit` enables it); the `2pyr-gen.json` output metadata is written by default (`--no-gen-metadata` disables it). |
+| `2-pyramid.exe --convert <pack\|dir> [--to 26.3] [--out <dir>] [--report <report.json>] [--folder] [--fast] [--cit] [--no-gen-metadata]` | Runs the **full conversion pipeline** and writes a structured report: structure analysis + pure/total timings (with the IO split) + per-task profile + size delta. A directory is walked recursively for every `.zip` / `.mcpack`. `--fast` turns off the GUI sprite surgery (`run_gui_surgeon`) to isolate its cost. `--folder` writes an extracted directory (Java targets only; an existing same-name directory is an error). CIT conversion is off by default (`--cit` enables it); the `2pyr-gen.json` output metadata is written by default (`--no-gen-metadata` disables it). |
+| `2-pyramid.exe --versions` | Lists every target version label with its `pack_format` (tab-separated: `spec<TAB>format<TAB>label`; the first 2 lines are `#` comment headers; `spec` is accepted directly by `--to`, so scripts can enumerate targets). |
 | `2-pyramid.exe --analyze <pack\|dir>` | Read-only **structure analysis**: official overlays, `supported_formats` range, non-standard version-folded directories, multi-root packs, with per-layer file counts and override counts. |
 | `2-pyramid.exe --pack-diff <A> <B> [--strict] [--json <report>]` | **Quality gate**: PNG compared per pixel, JSON semantically, everything else byte-wise; by default "same pixels, different encoding" is allowed, `--strict` demands identical bytes. Exit code 0/1, usable as a regression check for speed work. |
 
