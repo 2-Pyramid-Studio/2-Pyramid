@@ -220,6 +220,22 @@
             </div>
           </div>
 
+          <div class="setting-item" v-if="shouldShowItem('outputFormat')">
+            <div class="item-icon">
+              <i class="ri-file-zip-line" aria-hidden="true"></i>
+            </div>
+            <div class="item-info">
+              <div class="label">{{ t('settings.outputFormat.label') }}</div>
+              <div class="desc">{{ t('settings.outputFormat.desc') }}</div>
+            </div>
+            <div class="item-action">
+              <div class="segmented">
+                <button class="seg-btn" :class="{ active: outputFormat === 'zip' }" @click="outputFormat = 'zip'">{{ t('settings.outputFormat.zip') }}</button>
+                <button class="seg-btn" :class="{ active: outputFormat === 'folder' }" @click="outputFormat = 'folder'">{{ t('settings.outputFormat.folder') }}</button>
+              </div>
+            </div>
+          </div>
+
           <div class="setting-item" v-if="outputMode === 'fixed' && shouldShowItem('outputMode')">
             <div class="item-icon">
               <i class="ri-folder-2-line" aria-hidden="true"></i>
@@ -816,6 +832,9 @@ const { version: appInfoVersion, build: appBuildNumber, isBeta: appIsBeta } = us
 
 const outputMode = ref<'follow' | 'fixed'>('follow');
 const outputPath = ref('C:/Users/Admin/Documents/2-Pyramid/Output');
+/// 输出形态：zip（默认，历史行为）/ folder（解压目录，仅 Java 目标）。
+/// 与 outputMode/outputPath 一样落配置文件；localStorage 只做首帧快速恢复。
+const outputFormat = ref<'zip' | 'folder'>('zip');
 const showOutputDialog = ref(false);
 const onSaveOutputPath = async (path: string) => {
   outputPath.value = path;
@@ -1125,6 +1144,7 @@ const settingItems = [
   { id: 'uiStyle', group: 'global', label: t('settings.uiStyle.label'), desc: t('settings.uiStyle.desc') },
   { id: 'inAppPicker', group: 'global', label: t('settings.inAppPicker.label'), desc: t('settings.inAppPicker.desc') },
   { id: 'outputMode', group: 'convert', label: t('settings.outputMode.label'), desc: t('settings.outputMode.desc') },
+  { id: 'outputFormat', group: 'convert', label: t('settings.outputFormat.label'), desc: t('settings.outputFormat.desc') },
   { id: 'notification', group: 'notification', label: t('settings.notification.label'), desc: t('settings.notification.desc') },
   { id: 'notificationMode', group: 'notification', label: t('settings.notificationMode.label'), desc: t('settings.notificationMode.desc') },
   { id: 'testNotification', group: 'notification', label: t('settings.testNotification.label'), desc: t('settings.testNotification.desc') },
@@ -1274,11 +1294,15 @@ onMounted(() => {
   if (editorMode.value) void loadAiFromBackend();
   const savedMode = localStorage.getItem('outputMode');
   const savedPath = localStorage.getItem('outputPath');
+  const savedFormat = localStorage.getItem('outputFormat');
   if (savedMode === 'follow' || savedMode === 'fixed') {
     outputMode.value = savedMode;
   }
   if (savedPath) {
     outputPath.value = savedPath;
+  }
+  if (savedFormat === 'zip' || savedFormat === 'folder') {
+    outputFormat.value = savedFormat;
   }
   const savedThemeColor = localStorage.getItem('themeColor');
   if (savedThemeColor) {
@@ -1314,6 +1338,9 @@ onMounted(() => {
       }
       if (typeof cfg?.output_path === 'string' && cfg.output_path.length > 0) {
         outputPath.value = cfg.output_path;
+      }
+      if (cfg?.output_format === 'zip' || cfg?.output_format === 'folder') {
+        outputFormat.value = cfg.output_format;
       }
       if (cfg?.palette?.theme_color) {
         themeColor.value = cfg.palette.theme_color;
@@ -1427,6 +1454,11 @@ watch(outputMode, (val) => {
 watch(outputPath, (val) => {
   localStorage.setItem('outputPath', val);
   invoke('update_config', { patch: { outputPath: val } }).catch(() => {});
+});
+
+watch(outputFormat, (val) => {
+  localStorage.setItem('outputFormat', val);
+  invoke('update_config', { patch: { outputFormat: val } }).catch(() => {});
 });
 
 watch(notificationEnabled, (val) => {

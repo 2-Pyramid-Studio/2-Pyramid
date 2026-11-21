@@ -27,6 +27,15 @@ pub struct AppConfig {
     /// Output file naming template with `[Name]` / `[Ver]` / `[Time]` /
     /// `[Date]` placeholders, e.g. `[Name] [Ver]`.
     pub output_naming: Option<String>,
+    /// **输出形态**：`"zip"`（默认，旧行为）或 `"folder"`（输出解压目录）。
+    ///
+    /// `None` 视为 `"zip"`。与 `output_mode` / `output_path` 同属「输出偏好」，
+    /// 写进配置文件而不是只写 localStorage：重装/迁移后输出形态不该悄悄变回 zip。
+    ///
+    /// 只有 Java 目标支持 folder；Bedrock 目标（`.mcpack`）本身就是 zip 容器，
+    /// 转换命令遇到 "folder" 会直接报错，不做静默降级（静默降级会让用户以为
+    /// 设置生效了，实际拿到的是另一种产物）。白名单归一化见 `update_config`。
+    pub output_format: Option<String>,
     /// Custom background image path (managed via set_background).
     pub background_image: Option<String>,
     /// Background display fit: "cover" / "contain" / "stretch" / "tile".
@@ -158,6 +167,9 @@ pub struct ConfigPatch {
     pub conversion_threads: Option<u32>,
     #[serde(alias = "outputNaming")]
     pub output_naming: Option<String>,
+    /// 与 [`AppConfig::output_format`] 对应（前端 camelCase 传参）。
+    #[serde(alias = "outputFormat")]
+    pub output_format: Option<String>,
     #[serde(alias = "uiStyle")]
     pub ui_style: Option<String>,
     #[serde(alias = "themeMode")]
@@ -534,6 +546,7 @@ pub fn update_config(patch: ConfigPatch) -> Result<serde_json::Value, String> {
         patch.toast_position.as_ref().map(|_| "toast_position"),
         patch.conversion_threads.as_ref().map(|_| "conversion_threads"),
         patch.output_naming.as_ref().map(|_| "output_naming"),
+        patch.output_format.as_ref().map(|_| "output_format"),
         patch.ui_style.as_ref().map(|_| "ui_style"),
         patch.theme_mode.as_ref().map(|_| "theme_mode"),
     ]
@@ -589,6 +602,13 @@ pub fn update_config(patch: ConfigPatch) -> Result<serde_json::Value, String> {
         // just cap the length so a runaway paste can't bloat the file.
         let capped: String = v.chars().take(200).collect();
         cfg.output_naming = Some(capped);
+    }
+    if let Some(v) = patch.output_format {
+        // 白名单归一化：只接受 "folder"，其余（含手改出来的怪值）一律落回
+        // "zip"——默认行为必须是历史行为，不能让配置里一个拼写错误静默改变
+        // 产物形态。
+        let normalized = if v == "folder" { "folder" } else { "zip" };
+        cfg.output_format = Some(normalized.to_string());
     }
     if let Some(v) = patch.ui_style {
         let normalized = match v.as_str() {
@@ -773,5 +793,33 @@ mod tests {
         let raw = serde_json::to_string(&cfg).expect("serialize");
         let back: AppConfig = serde_json::from_str(&raw).expect("deserialize");
         assert_eq!(back.write_gen_metadata, Some(false));
+    }
+
+    /// **`output_format`：缺省 None、camelCase/snake_case 都收、能往返。**
+    ///
+    /// 它决定产物形态（zip vs 解压目录）。缺省必须读成 `None`（运行时按 zip 处理），
+    /// 这样旧配置文件不会因为新增字段而丢设置；alias 少了则前端切换「文件夹输出」
+    /// 时会被静默忽略——用户以为切了、产物却还是 zip，所以也钉住。
+    #[test]
+    fn output_format_patch_and_round_trip() {
+        let camel: ConfigPatch =
+            serde_json::from_str(r#"{"outputFormat":"folder"}"#).expect("camelCase patch");
+        assert_eq!(camel.output_format.as_deref(), Some("folder"));
+
+        let snake: ConfigPatch =
+            serde_json::from_str(r#"{"output_format":"zip"}"#).expect("snake_case patch");
+        assert_eq!(snake.output_format.as_deref(), Some("zip"));
+
+        let old: AppConfig = serde_json::from_str(r#"{"output_mode":"follow"}"#)
+            .expect("旧配置必须能解析");
+        assert_eq!(old.output_format, None, "旧配置缺省必须是 None（运行时按 zip 处理）");
+
+        let cfg = AppConfig {
+            output_format: Some("folder".to_string()),
+            ..AppConfig::default()
+        };
+        let raw = serde_json::to_string(&cfg).expect("serialize");
+        let back: AppConfig = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(back.output_format.as_deref(), Some("folder"));
     }
 }

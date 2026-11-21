@@ -539,6 +539,9 @@ const conversionResults = ref<any[]>([]);
 const logMessages = ref<string[]>([]);
 const outputMode = ref<'follow' | 'fixed'>('follow');
 const outputPath = ref('');
+/// 输出形态：zip（默认）/ folder（解压目录，仅 Java 目标）。
+/// 配置字段 `output_format` 是真源；这里首帧用 localStorage 快照，挂载后按配置校正。
+const outputFormat = ref<'zip' | 'folder'>('zip');
 const showVersionPicker = ref(false);
 const showBedrockWarn = ref(false);
 const show263Warn = ref(false);
@@ -692,8 +695,10 @@ const goBack = () => emit('switch-page', 'home');
 const loadOutputSettings = async () => {
   const savedMode = localStorage.getItem('outputMode');
   const savedPath = localStorage.getItem('outputPath');
+  const savedFormat = localStorage.getItem('outputFormat');
   if (savedMode === 'follow' || savedMode === 'fixed') outputMode.value = savedMode;
   if (savedPath) outputPath.value = savedPath;
+  if (savedFormat === 'zip' || savedFormat === 'folder') outputFormat.value = savedFormat;
   try {
     const cfg = await invoke<any>('get_config');
     if (cfg?.output_mode === 'follow' || cfg?.output_mode === 'fixed') {
@@ -701,6 +706,10 @@ const loadOutputSettings = async () => {
     }
     if (typeof cfg?.output_path === 'string' && cfg.output_path.length > 0) {
       outputPath.value = cfg.output_path;
+    }
+    // 输出形态以配置为准（Settings 页写的就是这个字段）；localStorage 只是快照。
+    if (cfg?.output_format === 'zip' || cfg?.output_format === 'folder') {
+      outputFormat.value = cfg.output_format;
     }
     // 删除 shaders 以**配置**为准：它是跟着备份/迁移走的用户偏好。
     // localStorage 只是本机缓存（可能被清、可能来自更早的版本）。
@@ -1014,6 +1023,8 @@ const startConversion = async () => {
       deleteCit: deleteCit.value,
       // 2pyr-gen 元数据：默认 true（后端 `unwrap_or(true)`），显式传当前开关状态。
       writeGenMetadata: writeGenMetadata.value,
+      // 输出形态：zip（默认）/ folder。缺省/旧后端会按 zip 处理（参数可选）。
+      outputFormat: outputFormat.value,
     });
 
     for (let i = 0; i < selectedItems.value.length; i++) {
@@ -1128,6 +1139,22 @@ const cancelConversion = async () => {
   }
 };
 
+/**
+ * 「打开输出所在的目录」。
+ *
+ * zip 产物：打开的是**父目录**（用户要看到那个 zip）。
+ * folder 产物：输出本身就是目录，直接打开它（再套一层父目录会让用户停在
+ * 空的上层目录里，尤其是 follow 模式下输出就在源包旁边）。
+ * `isConverted` 为 false 时（还没转换、只有源路径）继续按父目录处理。
+ */
+const outputFolderFor = (samplePath: string, isConverted: boolean): string => {
+  if (!samplePath) return '';
+  if (isConverted && outputFormat.value === 'folder') {
+    return samplePath.replace(/[\\/]+$/, '');
+  }
+  return samplePath.replace(/[^\\/]+$/, '');
+};
+
 const openOutputFolder = async () => {
   if (selectedItems.value.length === 0) return;
   try {
@@ -1137,7 +1164,8 @@ const openOutputFolder = async () => {
     const samplePath = successResult?.output
       || selectedItems.value[0].output_path
       || (outputMode.value === 'fixed' ? outputPath.value : selectedItems.value[0].path);
-    const dirPath = samplePath.replace(/[^\/\\]+$/, '');
+    const isConverted = Boolean(successResult?.output || selectedItems.value[0].output_path);
+    const dirPath = outputFolderFor(samplePath, isConverted);
     await invoke('open_folder', { path: dirPath });
   } catch (e) {
     notify({
@@ -1164,7 +1192,8 @@ const resolveOutputDir = (): string => {
     || (selectedItems.value[0]?.output_path ?? '')
     || (outputMode.value === 'fixed' ? outputPath.value : (selectedItems.value[0]?.path ?? ''));
   if (!samplePath) return '';
-  return samplePath.replace(/[^\\/]+$/, '');
+  const isConverted = Boolean(successResult?.output || selectedItems.value[0]?.output_path);
+  return outputFolderFor(samplePath, isConverted);
 };
 
 /**

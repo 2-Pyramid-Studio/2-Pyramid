@@ -346,6 +346,12 @@
       "follow": "Follow",
       "fixed": "Fixed"
     },
+    "outputFormat": {
+      "label": "Output Format",
+      "desc": "Save converted output as a ZIP archive or an extracted folder (Java targets only; an existing same-name directory is rejected, never overwritten)",
+      "zip": "ZIP archive",
+      "folder": "Folder"
+    },
     "legal": {
       "label": "Legal Notices",
       "desc": "Browse EULA, privacy, disclaimer and third-party notices",
