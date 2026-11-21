@@ -59,4 +59,4 @@
 
 **English summary:** The software is provided as-is without warranty. Conversion results are not guaranteed; back up your packs. 2-Pyramid is an unofficial third-party tool, not affiliated with or endorsed by Mojang/Microsoft. You are responsible for complying with the Minecraft EULA and pack authors' licenses.
 
-**联系方式：** https://github.com/realLivedInCorner/2-Pyramid/issues
+**联系方式：** https://github.com/2-Pyramid-Studio/2-Pyramid/issues

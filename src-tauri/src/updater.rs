@@ -354,7 +354,7 @@ fn version_bump(current: &str, latest: &str) -> VersionBump {
 // 历史上的国内镜像 `cdn.5eggpack.top` 已彻底移除（2026-10：镜像作者停止维护），
 // 更新源概念（含设置项、测速、切换命令）一并删除——没有任何可切换的源，
 // 也不再有相关 UI。配置文件里遗留的 `update_source` 字段会被忽略。
-const GITHUB_API: &str = "https://api.github.com/repos/realLivedInCorner/2-Pyramid/releases";
+const GITHUB_API: &str = "https://api.github.com/repos/2-Pyramid-Studio/2-Pyramid/releases";
 
 async fn fetch_releases() -> Result<Vec<GitHubRelease>, UpdateError> {
     let client = reqwest::Client::new();
@@ -1049,7 +1049,7 @@ mod tests {
             name: format!("2-Pyramid {}", version),
             body: String::new(),
             published_at: "2026-01-01T00:00:00Z".to_string(),
-            html_url: "https://github.com/realLivedInCorner/2-Pyramid/releases".to_string(),
+            html_url: "https://github.com/2-Pyramid-Studio/2-Pyramid/releases".to_string(),
             assets: assets
                 .iter()
                 .map(|(name, url)| AssetInfo {
@@ -1099,7 +1099,7 @@ mod tests {
     #[test]
     fn download_url_whitelist() {
         assert!(is_allowed_download_url(
-            "https://github.com/realLivedInCorner/2-Pyramid/releases/download/x/a.exe"
+            "https://github.com/2-Pyramid-Studio/2-Pyramid/releases/download/x/a.exe"
         ));
         assert!(is_allowed_download_url(
             "https://objects.githubusercontent.com/github-production-release-asset/x"

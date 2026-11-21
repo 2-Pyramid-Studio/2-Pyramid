@@ -6,14 +6,14 @@ Thanks for your interest in 2-Pyramid! Issues and pull requests are welcome.
 
 ## 1. Before you start
 
-- Search [Issues](https://github.com/realLivedInCorner/2-Pyramid/issues) and Discussions to avoid duplicates
+- Search [Issues](https://github.com/2-Pyramid-Studio/2-Pyramid/issues) and Discussions to avoid duplicates
 - For large features, open an Issue to align on design first
 - Code of conduct: stay respectful and technical; no personal attacks or unrelated political arguments
 
 ## 2. Development environment
 
 ```bash
-git clone git@github.com:realLivedInCorner/2-Pyramid.git
+git clone git@github.com:2-Pyramid-Studio/2-Pyramid.git
 cd 2-Pyramid          # or your local path
 npm install
 npm run 2pyr          # Tauri dev (Rust + Vite)

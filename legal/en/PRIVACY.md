@@ -100,4 +100,4 @@ Silent install (`--silent`) uploads nothing extra. Uninstall removes program fil
 
 ---
 
-**Contact:** GitHub Issues — https://github.com/realLivedInCorner/2-Pyramid/issues
+**Contact:** GitHub Issues — https://github.com/2-Pyramid-Studio/2-Pyramid/issues

@@ -6,14 +6,14 @@
 
 ## 1. 开始之前
 
-- 先搜 [Issues](https://github.com/realLivedInCorner/2-Pyramid/issues) 与 Discussions，避免重复
+- 先搜 [Issues](https://github.com/2-Pyramid-Studio/2-Pyramid/issues) 与 Discussions，避免重复
 - 较大的功能改动请先开 Issue 对齐方案，再动手
 - 行为准则：保持尊重；聚焦技术；不接受人身攻击或无关政治争论
 
 ## 2. 开发环境
 
 ```bash
-git clone git@github.com:realLivedInCorner/2-Pyramid.git
+git clone git@github.com:2-Pyramid-Studio/2-Pyramid.git
 cd 2-Pyramid          # 或你的本地路径
 npm install
 npm run 2pyr          # Tauri dev（Rust + Vite）

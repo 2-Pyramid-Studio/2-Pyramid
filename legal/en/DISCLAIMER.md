@@ -57,4 +57,4 @@ The project has drawn on ideas from other tools and authors in the community. Cr
 
 ---
 
-**Contact:** https://github.com/realLivedInCorner/2-Pyramid/issues
+**Contact:** https://github.com/2-Pyramid-Studio/2-Pyramid/issues

@@ -58,7 +58,7 @@
 
 ## 7. 变更与联系
 
-本协议更新会在仓库说明。更新**不影响**你依 MIT 已取得的权利，也不新增任何 MIT 之外的义务。疑问请开 [Issues](https://github.com/realLivedInCorner/2-Pyramid/issues)。
+本协议更新会在仓库说明。更新**不影响**你依 MIT 已取得的权利，也不新增任何 MIT 之外的义务。疑问请开 [Issues](https://github.com/2-Pyramid-Studio/2-Pyramid/issues)。
 
 ---
 

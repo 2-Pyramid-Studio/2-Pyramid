@@ -9,9 +9,9 @@
 
 **Do not open a public issue for a security problem.** Use GitHub's private reporting:
 
-<https://github.com/realLivedInCorner/2-Pyramid/security/advisories/new>
+<https://github.com/2-Pyramid-Studio/2-Pyramid/security/advisories/new>
 
-其它联系与支持走 [Issues](https://github.com/realLivedInCorner/2-Pyramid/issues)。
+其它联系与支持走 [Issues](https://github.com/2-Pyramid-Studio/2-Pyramid/issues)。
 
 ---
 

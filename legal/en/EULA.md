@@ -58,4 +58,4 @@ Dependencies are provided under their own licenses. See [`THIRD-PARTY-NOTICES.md
 
 ## 7. Changes and contact
 
-Updates to this agreement will be noted in the repository. They **do not affect** the rights you already hold under MIT and add no obligation beyond it. Questions: open [Issues](https://github.com/realLivedInCorner/2-Pyramid/issues).
+Updates to this agreement will be noted in the repository. They **do not affect** the rights you already hold under MIT and add no obligation beyond it. Questions: open [Issues](https://github.com/2-Pyramid-Studio/2-Pyramid/issues).

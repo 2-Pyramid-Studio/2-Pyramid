@@ -34,7 +34,7 @@ const PAYLOAD: &[u8] = include_bytes!("../payload.zip");
 const APP_NAME: &str = "2-Pyramid";
 const EXE_NAME: &str = "2-pyramid.exe";
 const UNINSTALLER_NAME: &str = "uninstall.exe";
-const GITHUB_URL: &str = "https://github.com/realLivedInCorner/2-Pyramid";
+const GITHUB_URL: &str = "https://github.com/2-Pyramid-Studio/2-Pyramid";
 
 // 构建渠道：stable（正式版）/ beta（测试版）。
 // 发布流水线在编译安装器时通过环境变量 2PYR_CHANNEL 注入。

@@ -104,4 +104,4 @@
 
 **English summary:** 2-Pyramid processes resource packs entirely on your device. No account, no telemetry, no upload of your packs (except optional Foray AI analysis you enable yourself). Network is used for update checks — **automatic update check is on by default at startup** and can be disabled in Settings — for downloading updates (GitHub Releases only), or when Foray AI is enabled. Share codes are exported locally; the app does not host them.
 
-**联系方式：** GitHub Issues — https://github.com/realLivedInCorner/2-Pyramid/issues
+**联系方式：** GitHub Issues — https://github.com/2-Pyramid-Studio/2-Pyramid/issues

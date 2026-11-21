@@ -86,14 +86,14 @@
 
 #### 用户（直接使用）
 
-1. 前往 [Releases](https://github.com/realLivedInCorner/2-Pyramid/releases) 下载 `2-Pyramid-Installer-{版本}.exe`（Beta 版为 `2-Pyramid-Installer-{版本}-beta.{BUILD}.exe`）
+1. 前往 [Releases](https://github.com/2-Pyramid-Studio/2-Pyramid/releases) 下载 `2-Pyramid-Installer-{版本}.exe`（Beta 版为 `2-Pyramid-Installer-{版本}-beta.{BUILD}.exe`）
 2. 或从 **Microsoft Store** 安装（`2-Pyramid-{版本}.msix`，与应用内更新互不影响）
 3. 安装后启动，首次运行跟随 OOBE 引导配置即可
 
 #### 开发者（本地运行）
 
 ```bash
-git clone git@github.com:realLivedInCorner/2-Pyramid.git
+git clone git@github.com:2-Pyramid-Studio/2-Pyramid.git
 cd 2-Pyramid
 
 npm install        # 前端依赖
@@ -343,14 +343,14 @@ npm run build                                               # 前端构建
 
 #### Users
 
-1. Download `2-Pyramid-Installer-{version}.exe` (or `...-beta.{BUILD}.exe` for Beta) from [Releases](https://github.com/realLivedInCorner/2-Pyramid/releases)
+1. Download `2-Pyramid-Installer-{version}.exe` (or `...-beta.{BUILD}.exe` for Beta) from [Releases](https://github.com/2-Pyramid-Studio/2-Pyramid/releases)
 2. Or install from the **Microsoft Store** (`2-Pyramid-{version}.msix`; independent of in-app updates)
 3. Install, launch, and follow the OOBE setup on first run
 
 #### Developers
 
 ```bash
-git clone git@github.com:realLivedInCorner/2-Pyramid.git
+git clone git@github.com:2-Pyramid-Studio/2-Pyramid.git
 cd 2-Pyramid
 
 npm install        # frontend deps

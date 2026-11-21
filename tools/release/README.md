@@ -53,7 +53,7 @@ gh release create Stable-x.y.z `
 - 发版后必须用**匿名**接口确认更新器能看到它：
 
 ```powershell
-(Invoke-WebRequest "https://api.github.com/repos/realLivedInCorner/2-Pyramid/releases" -UseBasicParsing `
+(Invoke-WebRequest "https://api.github.com/repos/2-Pyramid-Studio/2-Pyramid/releases" -UseBasicParsing `
   -Headers @{ 'User-Agent'='2pyr' }).Content | ConvertFrom-Json |
   Select-Object -First 3 tag_name, draft, prerelease
 ```
